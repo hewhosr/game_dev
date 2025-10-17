@@ -49,7 +49,7 @@ export const useMenuAnimations = (gameState) => {
     // Button fade in
     Animated.timing(buttonOpacity, {
       toValue: 1,
-      duration: 800,
+	      duration: 1000,
       useNativeDriver: true,
     }).start();
   };
