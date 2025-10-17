@@ -26,7 +26,7 @@ export const styles = StyleSheet.create({
   },
   score: {
     color: '#FFFFFF',
-    fontSize: 20,
+    fontSize: 19,
     fontWeight: 'bold',
     textShadowColor: 'rgba(255,255,255,0.3)',
     textShadowOffset: { width: 0, height: 0 },
