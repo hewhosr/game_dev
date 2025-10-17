@@ -6,7 +6,7 @@ export const styles = StyleSheet.create({
     justifyContent: 'space-around',
     alignItems: 'center',
     backgroundColor: '#1a1a2e',
-    paddingVertical: 40,
+    paddingVertical: 39,
     paddingHorizontal: 20
   },
   menuBackground: {

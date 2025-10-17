@@ -1,8 +1,7 @@
 import React from 'react';
 import { View } from 'react-native';
 import { GRID_SIZE } from '../../constants/GameConstants';
-import { styles } from '../../styles/GameStyles';
-
+import { styles } from '../../styles/GameStyle;
 const Food = ({ position }) => {
   if (!position) return null;
   
