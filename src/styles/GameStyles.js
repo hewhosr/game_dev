@@ -49,7 +49,7 @@ export const styles = StyleSheet.create({
   },
   iconButton: {
     backgroundColor: '#0f3460',
-    padding: 12,
+    padding: 13,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: '#1a5f9e',
