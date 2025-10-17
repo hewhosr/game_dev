@@ -3,7 +3,7 @@ import { StyleSheet } from 'react-native';
 export const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e'
+    backgroundColor: 'blue'
   },
   overlay: {
     position: 'absolute',
@@ -13,7 +13,7 @@ export const styles = StyleSheet.create({
     bottom: 0,
     backgroundColor: 'rgba(26, 26, 46, 0.95)',
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems: 'center', 
   },
   overlayContent: {
     backgroundColor: '#16213e',
