@@ -20,7 +20,7 @@ const Snake = ({ body }) => {
               height: GRID_SIZE - 1,
               backgroundColor: index === 0 ? '#00C853' : '#64DD17',
               ...(index === 0 && {
-                backgroundColor: '#00E676',
+                backgroundColor: 'pink',
                 shadowColor: '#00C853',
                 shadowOffset: { width: 0, height: 0 },
                 shadowOpacity: 0.8,

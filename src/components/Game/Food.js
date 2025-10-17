@@ -1,6 +1,6 @@
 import React from 'react';
 import { View } from 'react-native';
-import { GRID_SIZE } from '../../constants/GameConstants';
+/import { GRID_SIZE } from '../../constants/GameConstants';
 import { styles } from '../../styles/GameStyles';
 
 const Food = ({ position }) => {
