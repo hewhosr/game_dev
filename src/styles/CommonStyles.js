@@ -38,7 +38,7 @@ export const styles = StyleSheet.create({
   },
   overlaySubtitle: {
     color: '#BDBDBD',
-    fontSize: 16,
+    fontSize: 15,
     marginBottom: 8,
   },
   gameOverTitle: {
