@@ -45,7 +45,7 @@ export const styles = StyleSheet.create({
   },
   headerButtons: {
     flexDirection: 'row',
-    gap: 15,
+    gap: 14,
   },
   iconButton: {
     backgroundColor: '#0f3460',
