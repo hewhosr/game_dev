@@ -1,11 +1,10 @@
 import { StyleSheet } from 'react-native';
-
 export const styles = StyleSheet.create({
   menuContainer: {
     flex: 1,
     justifyContent: 'space-around',
     alignItems: 'center',
-    backgroundColor: '#1a1a2e',
+    backgroundColor: 'black',
     paddingVertical: 40,
     paddingHorizontal: 20
   },
