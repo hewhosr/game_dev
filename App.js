@@ -1,23 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-  Alert,
-  ScrollView,
-  Image,
-  TextInput
-} from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, Text, TouchableOpacity, TextInput, ScrollView, StyleSheet, Dimensions, Alert, Image } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const { width, height } = Dimensions.get('window');
-// Landscape optimized: use height for grid size (taller in landscape)
-const GRID_SIZE = 20;
-const CELL_SIZE = Math.floor((height - 100) / GRID_SIZE);
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const GRID_SIZE = 16;
+const CELL_SIZE = Math.min((SCREEN_WIDTH - 48) / GRID_SIZE, 18);
 
 const DIRECTIONS = {
   UP: { x: 0, y: -1 },
@@ -27,43 +15,51 @@ const DIRECTIONS = {
 };
 
 const DIFFICULTIES = {
-  EASY: { speed: 200, scoreMultiplier: 1 },
-  MEDIUM: { speed: 150, scoreMultiplier: 1.5 },
-  HARD: { speed: 100, scoreMultiplier: 2 }
+  EASY: { speed: 200, multiplier: 1, emoji: '🟢', color: '#10b981' },
+  MEDIUM: { speed: 150, multiplier: 1.5, emoji: '🟡', color: '#f59e0b' },
+  HARD: { speed: 100, multiplier: 2, emoji: '🔴', color: '#ef4444' },
+  INSANE: { speed: 75, multiplier: 3, emoji: '💀', color: '#8b5cf6' }
 };
 
-// ============================================================================
-// STORAGE UTILITIES
-// ============================================================================
 const StorageUtils = {
-  saveHighScore: async (playerName, score, difficulty) => {
+  saveScore: async (playerName, score, difficulty) => {
     try {
-      const scoresJson = await AsyncStorage.getItem('snake_highscores');
-      const scores = scoresJson ? JSON.parse(scoresJson) : [];
+      const stored = await AsyncStorage.getItem('snake_leaderboard');
+      const scores = stored ? JSON.parse(stored) : [];
+      
       scores.push({
-        id: Date.now().toString(),
-        playerName,
-        score,
+        id: `${Date.now()}-${Math.random()}`,
+        playerName: playerName.trim(),
+        score: Math.floor(score),
         difficulty,
         timestamp: Date.now()
       });
+      
       scores.sort((a, b) => b.score - a.score);
       const top100 = scores.slice(0, 100);
-      await AsyncStorage.setItem('snake_highscores', JSON.stringify(top100));
+      
+      await AsyncStorage.setItem('snake_leaderboard', JSON.stringify(top100));
       return top100;
     } catch (error) {
-      console.error('Error saving high score:', error);
       return [];
     }
   },
 
-  getHighScores: async () => {
+  getLeaderboard: async () => {
     try {
-      const stored = await AsyncStorage.getItem('snake_highscores');
+      const stored = await AsyncStorage.getItem('snake_leaderboard');
       return stored ? JSON.parse(stored) : [];
     } catch (error) {
-      console.error('Error getting high scores:', error);
       return [];
+    }
+  },
+
+  clearLeaderboard: async () => {
+    try {
+      await AsyncStorage.removeItem('snake_leaderboard');
+      return true;
+    } catch (error) {
+      return false;
     }
   },
 
@@ -80,20 +76,16 @@ const StorageUtils = {
       const stored = await AsyncStorage.getItem('snake_player_profile');
       return stored ? JSON.parse(stored) : null;
     } catch (error) {
-      console.error('Error getting profile:', error);
       return null;
     }
   }
 };
 
-// ============================================================================
-// GAME LOGIC
-// ============================================================================
 const GameLogic = {
   createInitialSnake: () => [
-    { x: 10, y: 10 },
-    { x: 9, y: 10 },
-    { x: 8, y: 10 }
+    { x: 8, y: 8 },
+    { x: 7, y: 8 },
+    { x: 6, y: 8 }
   ],
 
   createFood: (snake) => {
@@ -134,9 +126,6 @@ const GameLogic = {
   }
 };
 
-// ============================================================================
-// MAIN GAME COMPONENT
-// ============================================================================
 export default function SnakeGame() {
   const [screen, setScreen] = useState('menu');
   const [snake, setSnake] = useState(GameLogic.createInitialSnake());
@@ -147,91 +136,45 @@ export default function SnakeGame() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [difficulty, setDifficulty] = useState('MEDIUM');
-  const [playerName, setPlayerName] = useState('Player');
+  const [playerName, setPlayerName] = useState('');
   const [playerAvatar, setPlayerAvatar] = useState(null);
-  const [highScores, setHighScores] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [showGameOverModal, setShowGameOverModal] = useState(false);
+  const [highScore, setHighScore] = useState(0);
+  const [filterDifficulty, setFilterDifficulty] = useState('ALL');
+  const [gameMode, setGameMode] = useState('single');
+  const [multiplayerCode, setMultiplayerCode] = useState('');
+  const [opponentScore, setOpponentScore] = useState(0);
+  const [opponentName, setOpponentName] = useState('Opponent');
 
   const gameLoopRef = useRef(null);
 
   useEffect(() => {
     loadProfile();
-    loadHighScores();
+    loadLeaderboard();
   }, []);
 
   const loadProfile = async () => {
     const profile = await StorageUtils.getPlayerProfile();
     if (profile) {
-      setPlayerName(profile.name);
-      setPlayerAvatar(profile.avatar);
+      setPlayerName(profile.name || '');
+      setDifficulty(profile.difficulty || 'MEDIUM');
+      setPlayerAvatar(profile.avatar || null);
     }
   };
 
-  const loadHighScores = async () => {
-    const scores = await StorageUtils.getHighScores();
-    setHighScores(scores);
-  };
-
-  // Game loop
-  useEffect(() => {
-    if (!isPlaying || gameOver) return;
-
-    gameLoopRef.current = setInterval(() => {
-      setDirection(nextDirection);
-      
-      setSnake(prevSnake => {
-        const newSnake = GameLogic.moveSnake(prevSnake, nextDirection);
-
-        if (GameLogic.checkCollision(newSnake)) {
-          setGameOver(true);
-          setIsPlaying(false);
-          handleGameOver();
-          return prevSnake;
-        }
-
-        if (GameLogic.checkFood(newSnake, food)) {
-          setScore(prev => prev + (10 * DIFFICULTIES[difficulty].scoreMultiplier));
-          setFood(GameLogic.createFood(newSnake));
-          return GameLogic.growSnake(newSnake);
-        }
-
-        return newSnake;
-      });
-    }, DIFFICULTIES[difficulty].speed);
-
-    return () => clearInterval(gameLoopRef.current);
-  }, [isPlaying, gameOver, nextDirection, food, difficulty]);
-
-  const handleGameOver = async () => {
-    await StorageUtils.saveHighScore(playerName, Math.floor(score), difficulty);
-    await loadHighScores();
-    Alert.alert('Game Over!', `Final Score: ${Math.floor(score)}`, [
-      { text: 'Play Again', onPress: startGame },
-      { text: 'Menu', onPress: resetGame }
-    ]);
-  };
-
-  const startGame = () => {
-    setSnake(GameLogic.createInitialSnake());
-    setFood(GameLogic.createFood(GameLogic.createInitialSnake()));
-    setDirection(DIRECTIONS.RIGHT);
-    setNextDirection(DIRECTIONS.RIGHT);
-    setScore(0);
-    setGameOver(false);
-    setIsPlaying(true);
-    setScreen('game');
-  };
-
-  const resetGame = () => {
-    setIsPlaying(false);
-    setGameOver(false);
-    setScreen('menu');
+  const loadLeaderboard = async () => {
+    const scores = await StorageUtils.getLeaderboard();
+    setLeaderboard(scores);
+    if (scores.length > 0) {
+      setHighScore(scores[0].score);
+    }
   };
 
   const handleAvatarUpload = async () => {
-    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    
-    if (permissionResult.granted === false) {
-      Alert.alert('Permission Required', 'Please allow access to your photos!');
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Camera roll permission is required');
       return;
     }
 
@@ -244,54 +187,251 @@ export default function SnakeGame() {
 
     if (!result.canceled) {
       setPlayerAvatar(result.assets[0].uri);
-      await StorageUtils.savePlayerProfile({ name: playerName, avatar: result.assets[0].uri });
+      await StorageUtils.savePlayerProfile({ 
+        name: playerName,
+        difficulty: difficulty,
+        avatar: result.assets[0].uri
+      });
     }
   };
 
-  const saveProfile = async () => {
-    await StorageUtils.savePlayerProfile({ name: playerName, avatar: playerAvatar });
-    Alert.alert('Success', 'Profile saved!');
+  useEffect(() => {
+    if (!isPlaying || gameOver) return;
+
+    gameLoopRef.current = setInterval(() => {
+      setDirection(nextDirection);
+      
+      setSnake(prevSnake => {
+        const newSnake = GameLogic.moveSnake(prevSnake, nextDirection);
+
+        if (GameLogic.checkCollision(newSnake)) {
+          handleGameOver();
+          return prevSnake;
+        }
+
+        if (GameLogic.checkFood(newSnake, food)) {
+          const points = 10 * DIFFICULTIES[difficulty].multiplier;
+          setScore(prev => prev + points);
+          setFood(GameLogic.createFood(newSnake));
+          return GameLogic.growSnake(newSnake);
+        }
+
+        return newSnake;
+      });
+    }, DIFFICULTIES[difficulty].speed);
+
+    return () => clearInterval(gameLoopRef.current);
+  }, [isPlaying, gameOver, nextDirection, food, difficulty]);
+
+  const handleGameOver = async () => {
+    setGameOver(true);
+    setIsPlaying(false);
+    
+    if (score > 0) {
+      await StorageUtils.saveScore(playerName || 'Guest', score, difficulty);
+      await loadLeaderboard();
+    }
+    
+    setShowGameOverModal(true);
   };
 
-  // ============================================================================
-  // RENDER FUNCTIONS (LANDSCAPE OPTIMIZED)
-  // ============================================================================
+  const startGame = () => {
+    setSnake(GameLogic.createInitialSnake());
+    setFood(GameLogic.createFood(GameLogic.createInitialSnake()));
+    setDirection(DIRECTIONS.RIGHT);
+    setNextDirection(DIRECTIONS.RIGHT);
+    setScore(0);
+    setGameOver(false);
+    setShowGameOverModal(false);
+    setIsPlaying(true);
+    setScreen('game');
+  };
+
+  const resetGame = () => {
+    setIsPlaying(false);
+    setGameOver(false);
+    setShowGameOverModal(false);
+    setScreen('menu');
+  };
+
+  const saveProfile = async () => {
+    await StorageUtils.savePlayerProfile({ 
+      name: playerName,
+      difficulty: difficulty,
+      avatar: playerAvatar
+    });
+  };
+
+  const clearLeaderboardData = async () => {
+    Alert.alert(
+      'Clear Leaderboard',
+      'Delete all scores?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Clear', 
+          style: 'destructive',
+          onPress: async () => {
+            await StorageUtils.clearLeaderboard();
+            await loadLeaderboard();
+            Alert.alert('Success', 'Leaderboard cleared!');
+          }
+        }
+      ]
+    );
+  };
+
+  const generateMultiplayerCode = () => {
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setMultiplayerCode(code);
+    Alert.alert('Room Created!', `Share this code: ${code}\n\nAsk your friend to join!`);
+  };
+
+  const joinMultiplayerGame = () => {
+    if (multiplayerCode.trim().length === 6) {
+      setGameMode('multiplayer');
+      setOpponentName(`Player (${multiplayerCode})`);
+      startGame();
+    } else {
+      Alert.alert('Invalid Code', 'Code must be 6 characters');
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (gameLoopRef.current) clearInterval(gameLoopRef.current);
+    };
+  }, []);
 
   const renderMenu = () => (
-    <View style={styles.landscapeContainer}>
-      {/* Left side: Title and branding */}
-      <View style={styles.menuLeft}>
-        <Text style={styles.title}>🐍</Text>
-        <Text style={styles.titleText}>Snake Game</Text>
-        <Text style={styles.subtitle}>Swipe to Play!</Text>
-      </View>
+    <View style={styles.menuContainer}>
+      <View style={styles.menuContent}>
+        <View style={styles.titleContainer}>
+          <Text style={styles.titleText}>Nokia Snake Game</Text>
+          {highScore > 0 && (
+            <Text style={styles.highScoreText}>Best: {highScore}</Text>
+          )}
+        </View>
 
-      {/* Right side: Menu buttons */}
-      <View style={styles.menuRight}>
-        <TouchableOpacity style={[styles.button, styles.greenButton]} onPress={startGame}>
-          <Text style={styles.buttonText}>▶️ Play Solo</Text>
-        </TouchableOpacity>
+        <View style={styles.profileCard}>
+          <TouchableOpacity onPress={handleAvatarUpload} style={styles.avatarButton}>
+            {playerAvatar ? (
+              <Image source={{ uri: playerAvatar }} style={styles.avatar} />
+            ) : (
+              <View style={styles.avatarPlaceholder}>
+                <Text style={styles.avatarEmoji}>👤</Text>
+              </View>
+            )}
+            <View style={styles.cameraIcon}>
+              <Text style={styles.cameraEmoji}>📷</Text>
+            </View>
+          </TouchableOpacity>
+          
+          <TextInput
+            placeholder="Your name..."
+            placeholderTextColor="#94a3b8"
+            value={playerName}
+            onChangeText={setPlayerName}
+            onBlur={saveProfile}
+            maxLength={20}
+            style={styles.nameInput}
+          />
+        </View>
 
-        <TouchableOpacity style={[styles.button, styles.blueButton]} onPress={() => setScreen('multiplayer')}>
-          <Text style={styles.buttonText}>👥 Multiplayer</Text>
-        </TouchableOpacity>
+        <View style={styles.buttonGrid}>
+          <TouchableOpacity
+            onPress={() => { if (playerName.trim()) { setGameMode('single'); startGame(); } }}
+            disabled={!playerName.trim()}
+            style={[styles.menuButton, styles.playButton, !playerName.trim() && styles.disabledButton]}
+          >
+            <Text style={styles.buttonEmoji}>▶️</Text>
+            <Text style={styles.buttonText}>Single</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.button, styles.yellowButton]} onPress={() => setScreen('leaderboard')}>
-          <Text style={styles.buttonText}>🏆 Leaderboard</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { if (playerName.trim()) setScreen('multiplayer'); }}
+            disabled={!playerName.trim()}
+            style={[styles.menuButton, styles.multiButton, !playerName.trim() && styles.disabledButton]}
+          >
+            <Text style={styles.buttonEmoji}>👥</Text>
+            <Text style={styles.buttonText}>Multi</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.button, styles.grayButton]} onPress={() => setScreen('settings')}>
-          <Text style={styles.buttonText}>⚙️ Settings</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => {
+              loadLeaderboard();
+              setScreen('leaderboard');
+            }}
+            style={[styles.menuButton, styles.leaderboardButton]}
+          >
+            <Text style={styles.buttonEmoji}>🏆</Text>
+            <Text style={styles.buttonText}>Leaderboard</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setScreen('settings')}
+            style={[styles.menuButton, styles.settingsButton, styles.fullWidthButton]}
+          >
+            <Text style={styles.buttonEmoji}>⚙️</Text>
+            <Text style={styles.buttonText}>Settings</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
 
   const renderGame = () => (
-    <View style={styles.landscapeGameContainer}>
-      {/* Left side: Game board */}
-      <View style={styles.gameLeft}>
-        <View style={[styles.gameBoard, { width: GRID_SIZE * CELL_SIZE, height: GRID_SIZE * CELL_SIZE }]}>
+    <View style={styles.gameContainer}>
+      <View style={styles.gameHeader}>
+        <View style={styles.playerInfo}>
+          {playerAvatar ? (
+            <Image source={{ uri: playerAvatar }} style={styles.smallAvatar} />
+          ) : (
+            <Text style={styles.playerEmoji}>👤</Text>
+          )}
+          <Text style={styles.playerNameText}>{playerName || 'Guest'}</Text>
+        </View>
+        
+        <View style={styles.scoreContainer}>
+          <Text style={styles.scoreText}>{Math.floor(score)}</Text>
+          <Text style={styles.difficultyEmoji}>{DIFFICULTIES[difficulty].emoji}</Text>
+        </View>
+
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            onPress={() => setIsPlaying(!isPlaying)}
+            style={[styles.miniButton, isPlaying ? styles.pauseActive : styles.playActive]}
+          >
+            <Text style={styles.miniEmoji}>{isPlaying ? '⏸️' : '▶️'}</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              Alert.alert('Return to menu?', 'Your score will be lost', [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Yes', onPress: resetGame }
+              ]);
+            }}
+            style={styles.homeButton}
+          >
+            <Text style={styles.homeEmoji}>🏠</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {gameMode === 'multiplayer' && (
+        <View style={styles.opponentScoreBar}>
+          <Text style={styles.opponentText}>👤 {opponentName}: {Math.floor(opponentScore)}</Text>
+        </View>
+      )}
+
+      <View style={styles.gameBoard}>
+        <View
+          style={[styles.grid, {
+            width: GRID_SIZE * CELL_SIZE,
+            height: GRID_SIZE * CELL_SIZE
+          }]}
+        >
           {snake.map((segment, index) => (
             <View
               key={index}
@@ -303,11 +443,16 @@ export default function SnakeGame() {
                   width: CELL_SIZE,
                   height: CELL_SIZE,
                   backgroundColor: index === 0 ? '#059669' : '#10b981',
+                  borderRadius: index === 0 ? CELL_SIZE / 2 : 4,
+                  opacity: 1 - (index * 0.008),
                 }
               ]}
             >
               {index === 0 && playerAvatar && (
-                <Image source={{ uri: playerAvatar }} style={styles.snakeHead} />
+                <Image 
+                  source={{ uri: playerAvatar }} 
+                  style={styles.snakeHeadAvatar}
+                />
               )}
             </View>
           ))}
@@ -316,545 +461,1007 @@ export default function SnakeGame() {
             style={[
               styles.food,
               {
-                left: food.x * CELL_SIZE,
-                top: food.y * CELL_SIZE,
-                width: CELL_SIZE,
-                height: CELL_SIZE,
+                left: food.x * CELL_SIZE + 2,
+                top: food.y * CELL_SIZE + 2,
+                width: CELL_SIZE - 4,
+                height: CELL_SIZE - 4,
               }
             ]}
           />
         </View>
       </View>
 
-      {/* Right side: Controls and info */}
-      <View style={styles.gameRight}>
-        {/* Player info */}
-        <View style={styles.playerInfoLandscape}>
-          {playerAvatar && (
-            <Image source={{ uri: playerAvatar }} style={styles.avatarSmall} />
-          )}
-          <View>
-            <Text style={styles.playerName}>{playerName}</Text>
-            <Text style={styles.scoreText}>Score: {Math.floor(score)}</Text>
-          </View>
-        </View>
-
-        {/* Control buttons */}
-        <View style={styles.landscapeControls}>
-          <TouchableOpacity 
-            style={[styles.controlButton, { backgroundColor: isPlaying ? '#ef4444' : '#10b981' }]} 
-            onPress={() => setIsPlaying(!isPlaying)}
-          >
-            <Text style={styles.controlButtonText}>{isPlaying ? '⏸️ Pause' : '▶️ Play'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.controlButton} onPress={resetGame}>
-            <Text style={styles.controlButtonText}>🏠 Menu</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Touch Controls */}
-        <View style={styles.touchControls}>
-          <View style={styles.controlRow}>
-            <View style={styles.directionSpacer} />
-            <TouchableOpacity 
-              style={styles.directionButton}
+      <View style={styles.controlsContainer}>
+        <View style={styles.dpadWrapper}>
+          <View style={styles.dpad}>
+            <TouchableOpacity
               onPress={() => direction.y === 0 && setNextDirection(DIRECTIONS.UP)}
+              style={styles.dpadButton}
             >
-              <Text style={styles.directionText}>⬆️</Text>
+              <Text style={styles.dpadEmoji}>⬆️</Text>
             </TouchableOpacity>
-            <View style={styles.directionSpacer} />
-          </View>
-          <View style={styles.controlRow}>
-            <TouchableOpacity 
-              style={styles.directionButton}
-              onPress={() => direction.x === 0 && setNextDirection(DIRECTIONS.LEFT)}
-            >
-              <Text style={styles.directionText}>⬅️</Text>
-            </TouchableOpacity>
-            <View style={styles.directionButtonCenter} />
-            <TouchableOpacity 
-              style={styles.directionButton}
-              onPress={() => direction.x === 0 && setNextDirection(DIRECTIONS.RIGHT)}
-            >
-              <Text style={styles.directionText}>➡️</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.controlRow}>
-            <View style={styles.directionSpacer} />
-            <TouchableOpacity 
-              style={styles.directionButton}
+            <View style={styles.dpadRow}>
+              <TouchableOpacity
+                onPress={() => direction.x === 0 && setNextDirection(DIRECTIONS.LEFT)}
+                style={styles.dpadButton}
+              >
+                <Text style={styles.dpadEmoji}>⬅️</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => direction.x === 0 && setNextDirection(DIRECTIONS.RIGHT)}
+                style={styles.dpadButton}
+              >
+                <Text style={styles.dpadEmoji}>➡️</Text>
+              </TouchableOpacity>
+            </View>
+            <TouchableOpacity
               onPress={() => direction.y === 0 && setNextDirection(DIRECTIONS.DOWN)}
+              style={styles.dpadButton}
             >
-              <Text style={styles.directionText}>⬇️</Text>
+              <Text style={styles.dpadEmoji}>⬇️</Text>
             </TouchableOpacity>
-            <View style={styles.directionSpacer} />
           </View>
         </View>
-
-        <Text style={styles.helpText}>Tap arrows to move</Text>
       </View>
-    </View>
-  );
 
-  const renderLeaderboard = () => (
-    <View style={styles.landscapeContainer}>
-      <View style={styles.landscapeContent}>
-        <Text style={styles.leaderboardTitle}>🏆 Leaderboard</Text>
-        
-        <ScrollView style={styles.leaderboardScroll}>
-          {highScores.length === 0 ? (
-            <Text style={styles.emptyText}>No scores yet. Be the first!</Text>
-          ) : (
-            highScores.slice(0, 10).map((score, index) => (
-              <View key={score.id} style={[styles.scoreRowLandscape, index < 3 && styles.topScore]}>
-                <Text style={styles.rankLandscape}>
-                  {index === 0 && '🥇'}
-                  {index === 1 && '🥈'}
-                  {index === 2 && '🥉'}
-                  {index > 2 && `#${index + 1}`}
-                </Text>
-                <Text style={styles.scorePlayerLandscape}>{score.playerName}</Text>
-                <Text style={styles.scoreValueLandscape}>{score.score}</Text>
-                <Text style={[styles.scoreDifficultyLandscape, { color: 
-                  score.difficulty === 'EASY' ? '#16a34a' :
-                  score.difficulty === 'MEDIUM' ? '#ca8a04' : '#dc2626'
-                }]}>
-                  {score.difficulty}
-                </Text>
-              </View>
-            ))
-          )}
-        </ScrollView>
-        
-        <TouchableOpacity style={[styles.button, styles.grayButton]} onPress={() => setScreen('menu')}>
-          <Text style={styles.buttonText}>Back to Menu</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-
-  const renderSettings = () => (
-    <View style={styles.landscapeContainer}>
-      <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsContent}>
-        <Text style={styles.settingsTitle}>⚙️ Settings</Text>
-        
-        <View style={styles.settingsRow}>
-          <View style={styles.settingsColumn}>
-            <Text style={styles.label}>Player Name</Text>
-            <TextInput
-              style={styles.input}
-              value={playerName}
-              onChangeText={setPlayerName}
-              placeholder="Enter your name"
-              placeholderTextColor="#999"
-            />
-
-            <Text style={styles.label}>Snake Head (Your Face)</Text>
-            <View style={styles.avatarContainer}>
-              {playerAvatar && (
-                <Image source={{ uri: playerAvatar }} style={styles.avatarLarge} />
-              )}
-              <TouchableOpacity style={[styles.button, styles.greenButton]} onPress={handleAvatarUpload}>
-                <Text style={styles.buttonText}>📷 {playerAvatar ? 'Change' : 'Upload'}</Text>
+      {showGameOverModal && (
+        <View style={styles.modal}>
+          <View style={styles.modalContent}>
+            <Text style={styles.gameOverEmoji}>💀</Text>
+            <Text style={styles.gameOverText}>GAME OVER</Text>
+            <View style={styles.finalScoreCard}>
+              <Text style={styles.finalScore}>{Math.floor(score)}</Text>
+              <Text style={styles.finalDifficulty}>
+                {DIFFICULTIES[difficulty].emoji} {difficulty}
+              </Text>
+            </View>
+            {score > highScore && score > 0 && (
+              <Text style={styles.newHighScore}>🎉 NEW HIGH SCORE!</Text>
+            )}
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowGameOverModal(false);
+                  startGame();
+                }}
+                style={[styles.modalButton, styles.playAgainButton]}
+              >
+                <Text style={styles.modalButtonText}>🔄 Again</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={resetGame}
+                style={[styles.modalButton, styles.menuButton2]}
+              >
+                <Text style={styles.modalButtonText}>🏠 Menu</Text>
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      )}
+    </View>
+  );
 
-          <View style={styles.settingsColumn}>
-            <Text style={styles.label}>Difficulty</Text>
-            {Object.keys(DIFFICULTIES).map(diff => (
-              <TouchableOpacity
-                key={diff}
-                style={[
-                  styles.difficultyButton,
-                  difficulty === diff && styles.difficultyButtonActive
-                ]}
-                onPress={() => setDifficulty(diff)}
-              >
-                <Text style={[
-                  styles.difficultyText,
-                  difficulty === diff && styles.difficultyTextActive
-                ]}>
-                  {diff} (×{DIFFICULTIES[diff].scoreMultiplier})
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+  const renderMultiplayer = () => (
+    <View style={styles.multiplayerContainer}>
+      <View style={styles.multiplayerHeader}>
+        <Text style={styles.multiplayerTitle}>👥 Multiplayer</Text>
+        <TouchableOpacity onPress={() => setScreen('menu')}>
+          <Text style={styles.closeButton}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={styles.multiplayerContent}>
+        <View style={styles.modeCard}>
+          <Text style={styles.modeCardTitle}>🎮 Create Room</Text>
+          <Text style={styles.modeCardDesc}>Create a room and share the code with friends</Text>
+          <TouchableOpacity
+            onPress={generateMultiplayerCode}
+            style={styles.modeButton}
+          >
+            <Text style={styles.modeButtonText}>Generate Code</Text>
+          </TouchableOpacity>
+          {multiplayerCode && (
+            <View style={styles.codeDisplay}>
+              <Text style={styles.codeText}>Code: {multiplayerCode}</Text>
+            </View>
+          )}
         </View>
 
-        <View style={styles.settingsButtons}>
-          <TouchableOpacity style={[styles.button, styles.blueButton, styles.halfButton]} onPress={saveProfile}>
-            <Text style={styles.buttonText}>💾 Save</Text>
+        <View style={styles.modeCard}>
+          <Text style={styles.modeCardTitle}>🔗 Join Room</Text>
+          <Text style={styles.modeCardDesc}>Enter a friend's room code to join</Text>
+          <TextInput
+            placeholder="Enter 6-digit code..."
+            placeholderTextColor="#94a3b8"
+            value={multiplayerCode}
+            onChangeText={setMultiplayerCode}
+            maxLength={6}
+            style={styles.codeInput}
+          />
+          <TouchableOpacity
+            onPress={joinMultiplayerGame}
+            disabled={multiplayerCode.trim().length !== 6}
+            style={[styles.modeButton, multiplayerCode.trim().length !== 6 && styles.disabledButton]}
+          >
+            <Text style={styles.modeButtonText}>Join Game</Text>
           </TouchableOpacity>
+        </View>
 
-          <TouchableOpacity style={[styles.button, styles.grayButton, styles.halfButton]} onPress={() => setScreen('menu')}>
-            <Text style={styles.buttonText}>🏠 Back</Text>
-          </TouchableOpacity>
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>ℹ️ How Multiplayer Works</Text>
+          <Text style={styles.infoText}>• Create or join a room using a 6-digit code</Text>
+          <Text style={styles.infoText}>• Both players compete in real-time</Text>
+          <Text style={styles.infoText}>• Highest score wins!</Text>
+          <Text style={styles.infoText}>• Scores are displayed live on screen</Text>
+          <Text style={styles.infoText}>• Same difficulty for fair competition</Text>
         </View>
       </ScrollView>
     </View>
   );
 
-  const renderMultiplayer = () => (
-    <View style={styles.landscapeContainer}>
-      <View style={styles.landscapeContent}>
-        <Text style={styles.multiplayerTitle}>👥 Multiplayer</Text>
-        
-        <View style={styles.comingSoon}>
-          <Text style={styles.comingSoonTitle}>🚧 Coming Soon!</Text>
-          <Text style={styles.comingSoonText}>
-            Multiplayer mode with Firebase real-time sync.
-          </Text>
+  const renderLeaderboard = () => {
+    const filteredScores = filterDifficulty === 'ALL' 
+      ? leaderboard 
+      : leaderboard.filter(s => s.difficulty === filterDifficulty);
+
+    return (
+      <View style={styles.leaderboardContainer}>
+        <View style={styles.leaderboardHeader}>
+          <Text style={styles.leaderboardTitle}>🏆 Leaderboard</Text>
+          <TouchableOpacity onPress={() => setScreen('menu')}>
+            <Text style={styles.closeButton}>✕</Text>
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity style={[styles.button, styles.blueButton]} onPress={() => setScreen('menu')}>
-          <Text style={styles.buttonText}>Back to Menu</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
+          {['ALL', ...Object.keys(DIFFICULTIES)].map((diff) => (
+            <TouchableOpacity
+              key={diff}
+              onPress={() => setFilterDifficulty(diff)}
+              style={[
+                styles.filterButton,
+                filterDifficulty === diff && styles.filterButtonActive
+              ]}
+            >
+              <Text style={[
+                styles.filterButtonText,
+                filterDifficulty === diff && styles.filterButtonTextActive
+              ]}>
+                {diff === 'ALL' ? 'ALL' : `${DIFFICULTIES[diff].emoji} ${diff}`}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
+        <ScrollView style={styles.scoresList}>
+          {filteredScores.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyEmoji}>🎮</Text>
+              <Text style={styles.emptyText}>No scores yet. Be the first!</Text>
+            </View>
+          ) : (
+            filteredScores.slice(0, 50).map((entry, index) => (
+              <View
+                key={entry.id}
+                style={[
+                  styles.scoreEntry,
+                  entry.playerName === playerName && styles.scoreEntryHighlight
+                ]}
+              >
+                <Text style={styles.scoreRank}>
+                  {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : index + 1}
+                </Text>
+                <View style={styles.scoreInfo}>
+                  <Text style={styles.scoreName}>{entry.playerName}</Text>
+                  <Text style={styles.scoreDate}>
+                    {new Date(entry.timestamp).toLocaleDateString()}
+                  </Text>
+                </View>
+                <View style={styles.scoreRight}>
+                  <Text style={styles.scorePoints}>{entry.score}</Text>
+                  <Text style={styles.scoreEmoji}>{DIFFICULTIES[entry.difficulty]?.emoji}</Text>
+                </View>
+              </View>
+            ))
+          )}
+        </ScrollView>
+
+        <TouchableOpacity
+          onPress={clearLeaderboardData}
+          style={styles.clearButton}
+        >
+          <Text style={styles.clearButtonText}>🗑️ Clear All Data</Text>
         </TouchableOpacity>
       </View>
+    );
+  };
+
+  const renderSettings = () => (
+    <View style={styles.settingsContainer}>
+      <View style={styles.settingsHeader}>
+        <Text style={styles.settingsTitle}>⚙️ Settings</Text>
+        <TouchableOpacity
+          onPress={() => {
+            saveProfile();
+            setScreen('menu');
+          }}
+        >
+          <Text style={styles.closeButton}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={styles.settingsContent}>
+        <View style={styles.settingsCard}>
+          <Text style={styles.settingsCardTitle}>👤 Player Avatar</Text>
+          <View style={styles.avatarUploadContainer}>
+            <TouchableOpacity onPress={handleAvatarUpload}>
+              {playerAvatar ? (
+                <Image source={{ uri: playerAvatar }} style={styles.settingsAvatar} />
+              ) : (
+                <View style={styles.settingsAvatarPlaceholder}>
+                  <Text style={styles.settingsAvatarEmoji}>👤</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+            <Text style={styles.avatarHint}>Tap to upload your photo</Text>
+          </View>
+        </View>
+
+        <View style={styles.settingsCard}>
+          <Text style={styles.settingsCardTitle}>🎯 Difficulty</Text>
+          {Object.entries(DIFFICULTIES).map(([key, value]) => (
+            <TouchableOpacity
+              key={key}
+              onPress={() => setDifficulty(key)}
+              style={[
+                styles.difficultyButton,
+                difficulty === key && styles.difficultyButtonActive
+              ]}
+            >
+              <Text style={styles.difficultyEmoji2}>{value.emoji}</Text>
+              <View style={styles.difficultyInfo}>
+                <Text style={[
+                  styles.difficultyName,
+                  difficulty === key && styles.difficultyNameActive
+                ]}>
+                  {key}
+                </Text>
+                <Text style={[
+                  styles.difficultyDetails,
+                  difficulty === key && styles.difficultyDetailsActive
+                ]}>
+                  ×{value.multiplier} points • {value.speed}ms
+                </Text>
+              </View>
+              {difficulty === key && <Text style={styles.checkmark}>✓</Text>}
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <View style={styles.howToPlayCard}>
+          <Text style={styles.howToPlayTitle}>🎮 How to Play</Text>
+          <Text style={styles.howToPlayText}>• Use arrow buttons to control the snake</Text>
+          <Text style={styles.howToPlayText}>• Eat the red food to grow and score points</Text>
+          <Text style={styles.howToPlayText}>• Don't run into yourself!</Text>
+          <Text style={styles.howToPlayText}>• Your avatar appears on the snake's head</Text>
+          <Text style={styles.howToPlayText}>• Higher difficulty = more points per food</Text>
+        </View>
+      </ScrollView>
     </View>
   );
 
-  // ============================================================================
-  // MAIN RENDER
-  // ============================================================================
-
-  return (
-    <View style={styles.mainContainer}>
-      <StatusBar style="light" hidden />
-      {screen === 'menu' && renderMenu()}
-      {screen === 'game' && renderGame()}
-      {screen === 'leaderboard' && renderLeaderboard()}
-      {screen === 'settings' && renderSettings()}
-      {screen === 'multiplayer' && renderMultiplayer()}
-    </View>
-  );
+  switch (screen) {
+    case 'menu':
+      return renderMenu();
+    case 'game':
+      return renderGame();
+    case 'leaderboard':
+      return renderLeaderboard();
+    case 'multiplayer':
+      return renderMultiplayer();
+    case 'settings':
+      return renderSettings();
+    default:
+      return renderMenu();
+  }
 }
 
-// ============================================================================
-// STYLES (LANDSCAPE OPTIMIZED)
-// ============================================================================
-
 const styles = StyleSheet.create({
-  mainContainer: {
+  menuContainer: {
     flex: 1,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#0f172a',
+    justifyContent: 'center',
+    padding: 8,
   },
-  landscapeContainer: {
-    flex: 1,
-    flexDirection: 'row',
-    backgroundColor: '#047857',
+  menuContent: {
+    maxWidth: 360,
+    width: '100%',
+    alignSelf: 'center',
   },
-  menuLeft: {
-    flex: 1,
+  titleContainer: {
     alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  menuRight: {
-    flex: 1,
-    justifyContent: 'center',
-    padding: 20,
-  },
-  title: {
-    fontSize: 80,
     marginBottom: 10,
   },
   titleText: {
-    fontSize: 40,
+    fontSize: 28,
     fontWeight: 'bold',
-    color: '#fff',
+    color: '#10b981',
+    marginBottom: 2,
   },
-  subtitle: {
-    fontSize: 16,
-    color: '#dcfce7',
-    marginTop: 10,
-  },
-  button: {
-    width: '100%',
-    padding: 14,
-    borderRadius: 12,
-    marginVertical: 6,
-    alignItems: 'center',
-  },
-  halfButton: {
-    width: '48%',
-  },
-  greenButton: {
-    backgroundColor: '#10b981',
-  },
-  blueButton: {
-    backgroundColor: '#3b82f6',
-  },
-  yellowButton: {
-    backgroundColor: '#eab308',
-  },
-  grayButton: {
-    backgroundColor: '#6b7280',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
+  highScoreText: {
+    fontSize: 12,
     fontWeight: 'bold',
+    color: '#f59e0b',
   },
-  landscapeGameContainer: {
-    flex: 1,
-    flexDirection: 'row',
-    backgroundColor: '#1a1a1a',
-    padding: 20,
-  },
-  gameLeft: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 20,
-  },
-  gameRight: {
-    flex: 1,
-    justifyContent: 'space-around',
-    alignItems: 'center',
-  },
-  playerInfoLandscape: {
+  profileCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#2a2a2a',
-    padding: 12,
-    borderRadius: 12,
-    width: '100%',
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 10,
+    padding: 8,
+    marginBottom: 8,
+    gap: 8,
   },
-  avatarSmall: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+  avatarButton: {
+    position: 'relative',
+  },
+  avatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     borderWidth: 2,
     borderColor: '#10b981',
   },
-  playerName: {
-    color: '#999',
-    fontSize: 14,
-  },
-  scoreText: {
-    color: '#10b981',
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  landscapeControls: {
-    flexDirection: 'row',
-    gap: 10,
-    width: '100%',
-  },
-  controlButton: {
-    flex: 1,
-    backgroundColor: '#374151',
-    padding: 12,
-    borderRadius: 12,
+  avatarPlaceholder: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#475569',
+    borderWidth: 2,
+    borderColor: '#64748b',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  controlButtonText: {
-    color: '#fff',
+  avatarEmoji: {
+    fontSize: 20,
+  },
+   cameraIcon: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#3b82f6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#0f172a',
+  },
+  cameraEmoji: {
+    fontSize: 12,
+  },
+  nameInput: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    color: '#f1f5f9',
     fontSize: 14,
+    borderWidth: 2,
+    borderColor: '#475569',
+  },
+  buttonGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  menuButton: {
+    flex: 1,
+    minWidth: '47%',
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    gap: 6,
+  },
+  playButton: {
+    backgroundColor: '#10b981',
+  },
+  multiButton: {
+    backgroundColor: '#8b5cf6',
+  },
+  leaderboardButton: {
+    backgroundColor: '#f59e0b',
+  },
+  settingsButton: {
+    backgroundColor: '#475569',
+  },
+  fullWidthButton: {
+    flex: 1,
+    minWidth: '100%',
+  },
+  disabledButton: {
+    backgroundColor: '#475569',
+    opacity: 0.5,
+  },
+  buttonEmoji: {
+    fontSize: 20,
+  },
+  buttonText: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  gameContainer: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+    padding: 8,
+  },
+  gameHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+  },
+  playerInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  smallAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#10b981',
+  },
+  playerEmoji: {
+    fontSize: 24,
+  },
+  playerNameText: {
+    color: '#f1f5f9',
+    fontSize: 12,
     fontWeight: 'bold',
   },
-  gameBoard: {
-    backgroundColor: '#dcfce7',
-    borderWidth: 4,
-    borderColor: '#10b981',
-    position: 'relative',
+  scoreContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    justifyContent: 'center',
+  },
+  scoreText: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#10b981',
+  },
+  difficultyEmoji: {
+    fontSize: 16,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  miniButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+  },
+  pauseActive: {
+    backgroundColor: '#ef4444',
+    borderColor: '#dc2626',
+  },
+  playActive: {
+    backgroundColor: '#10b981',
+    borderColor: '#059669',
+  },
+  miniEmoji: {
+    fontSize: 16,
+  },
+  homeButton: {
+    padding: 4,
+  },
+  homeEmoji: {
+    fontSize: 20,
+  },
+  opponentScoreBar: {
+    backgroundColor: 'rgba(139, 92, 246, 0.2)',
     borderRadius: 8,
+    padding: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#8b5cf6',
+  },
+  opponentText: {
+    color: '#e9d5ff',
+    fontSize: 11,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  gameBoard: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  grid: {
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 16,
+    borderWidth: 4,
+    borderColor: 'rgba(71, 85, 105, 0.5)',
+    position: 'relative',
   },
   snakeSegment: {
     position: 'absolute',
-    borderWidth: 1,
-    borderColor: '#047857',
   },
-  snakeHead: {
+  snakeHeadAvatar: {
     width: '100%',
     height: '100%',
+    borderRadius: 100,
   },
   food: {
     position: 'absolute',
     backgroundColor: '#ef4444',
     borderRadius: 100,
   },
-  touchControls: {
+  controlsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    paddingLeft: 12,
+    paddingBottom: 8,
+  },
+  dpadWrapper: {
+    alignItems: 'flex-start',
+  },
+  dpad: {
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+  },
+  dpadButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: 'rgba(100, 116, 139, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(100, 116, 139, 0.8)',
+  },
+  dpadRow: {
+    flexDirection: 'row',
+    gap: 4,
+  },
+  dpadEmoji: {
+    fontSize: 18,
+  },
+  modal: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  controlRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginVertical: 4,
+  modalContent: {
+    backgroundColor: '#1e293b',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#10b981',
+    width: '80%',
+    maxWidth: 340,
   },
-  directionButton: {
-    width: 60,
-    height: 60,
-    backgroundColor: '#374151',
+  gameOverEmoji: {
+    fontSize: 56,
+    marginBottom: 12,
+  },
+  gameOverText: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#ef4444',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  finalScoreCard: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
     borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: '#10b981',
     alignItems: 'center',
-    justifyContent: 'center',
+    width: '100%',
   },
-  directionButtonCenter: {
-    width: 60,
-    height: 60,
-  },
-  directionSpacer: {
-    width: 60,
-  },
-  directionText: {
-    fontSize: 28,
-  },
-  helpText: {
-    color: '#999',
-    fontSize: 12,
-    textAlign: 'center',
-  },
-  landscapeContent: {
-    flex: 1,
-    padding: 30,
-    justifyContent: 'center',
-  },
-  leaderboardTitle: {
-    fontSize: 36,
+  finalScore: {
+    fontSize: 40,
     fontWeight: 'bold',
-    color: '#eab308',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  leaderboardScroll: {
-    flex: 1,
-    marginBottom: 20,
-  },
-  emptyText: {
-    color: '#999',
-    textAlign: 'center',
-    fontSize: 16,
-    marginVertical: 40,
-  },
-  scoreRowLandscape: {
-    flexDirection: 'row',
-    backgroundColor: '#2a2a2a',
-    padding: 14,
-    borderRadius: 8,
-    marginVertical: 4,
-    alignItems: 'center',
-  },
-  topScore: {
-    backgroundColor: '#3a3a2a',
-  },
-  rankLandscape: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    width: 50,
-    color: '#fff',
-  },
-  scorePlayerLandscape: {
-    flex: 1,
-    color: '#fff',
-    fontSize: 16,
-  },
-  scoreValueLandscape: {
     color: '#10b981',
+  },
+  finalDifficulty: {
+    fontSize: 16,
+    color: '#cbd5e1',
+    marginTop: 4,
+  },
+  newHighScore: {
     fontSize: 18,
     fontWeight: 'bold',
-    marginRight: 10,
-  },
-  scoreDifficultyLandscape: {
-    fontSize: 12,
-    fontWeight: 'bold',
-    width: 70,
-    textAlign: 'right',
-  },
-  settingsScroll: {
-    flex: 1,
-  },
-  settingsContent: {
-    padding: 30,
-  },
-  settingsTitle: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#fff',
+    color: '#f59e0b',
+    marginBottom: 16,
     textAlign: 'center',
-    marginBottom: 20,
   },
-  settingsRow: {
+  modalButtons: {
     flexDirection: 'row',
-    gap: 20,
-    marginBottom: 20,
+    gap: 12,
+    width: '100%',
   },
-  settingsColumn: {
+  modalButton: {
     flex: 1,
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    borderWidth: 2,
   },
-  label: {
+  playAgainButton: {
+    backgroundColor: '#10b981',
+    borderColor: '#059669',
+  },
+  menuButton2: {
+    backgroundColor: '#475569',
+    borderColor: '#334155',
+  },
+  modalButtonText: {
     color: '#fff',
     fontSize: 14,
     fontWeight: 'bold',
-    marginTop: 12,
-    marginBottom: 8,
   },
-  input: {
-    backgroundColor: '#2a2a2a',
-    color: '#fff',
+  multiplayerContainer: {
+    flex: 1,
+    backgroundColor: '#0f172a',
     padding: 12,
-    borderRadius: 8,
+  },
+  multiplayerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  multiplayerTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#8b5cf6',
+  },
+  closeButton: {
+    fontSize: 20,
+    color: '#cbd5e1',
+    padding: 2,
+  },
+  multiplayerContent: {
+    flex: 1,
+  },
+  modeCard: {
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 12,
     borderWidth: 2,
-    borderColor: '#374151',
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  modeCardTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+    marginBottom: 6,
+  },
+  modeCardDesc: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginBottom: 12,
+  },
+  modeButton: {
+    backgroundColor: '#8b5cf6',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#7c3aed',
+  },
+  modeButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  codeDisplay: {
+    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 12,
+    borderWidth: 2,
+    borderColor: '#8b5cf6',
+  },
+  codeText: {
+    color: '#e9d5ff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    letterSpacing: 2,
+  },
+  codeInput: {
+    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#f1f5f9',
+    fontSize: 16,
+    borderWidth: 2,
+    borderColor: '#8b5cf6',
+    marginBottom: 12,
+    textAlign: 'center',
+    fontWeight: 'bold',
+    letterSpacing: 2,
+  },
+  infoCard: {
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  infoTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+    marginBottom: 10,
+  },
+  infoText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  leaderboardContainer: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+    padding: 12,
+  },
+  leaderboardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  leaderboardTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#f59e0b',
+  },
+  filterScroll: {
+    marginBottom: 12,
+    maxHeight: 44,
+  },
+  filterButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(71, 85, 105, 0.4)',
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.6)',
+    marginRight: 6,
+  },
+  filterButtonActive: {
+    backgroundColor: '#10b981',
+    borderColor: '#059669',
+  },
+  filterButtonText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  filterButtonTextActive: {
+    color: '#fff',
+  },
+  scoresList: {
+    flex: 1,
+    marginBottom: 12,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 32,
+  },
+  emptyEmoji: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  emptyText: {
+    color: '#cbd5e1',
     fontSize: 16,
   },
-  avatarContainer: {
+  scoreEntry: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    backgroundColor: 'rgba(30, 41, 59, 0.5)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
   },
-  avatarLarge: {
+  scoreEntryHighlight: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: '#10b981',
+    borderWidth: 2,
+  },
+  scoreRank: {
+    fontSize: 18,
+    marginRight: 12,
+    minWidth: 32,
+  },
+  scoreInfo: {
+    flex: 1,
+  },
+  scoreName: {
+    color: '#f1f5f9',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  scoreDate: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  scoreRight: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  scorePoints: {
+    color: '#10b981',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  scoreEmoji: {
+    fontSize: 12,
+  },
+  clearButton: {
+    backgroundColor: '#ef4444',
+    borderRadius: 12,
+    padding: 12,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#dc2626',
+  },
+  clearButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  settingsContainer: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+    padding: 12,
+  },
+  settingsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  settingsTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#475569',
+  },
+  settingsContent: {
+    flex: 1,
+  },
+  settingsCard: {
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  settingsCardTitle: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+    marginBottom: 10,
+  },
+  avatarUploadContainer: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  settingsAvatar: {
     width: 80,
     height: 80,
     borderRadius: 40,
-    borderWidth: 2,
+    borderWidth: 3,
     borderColor: '#10b981',
   },
+  settingsAvatarPlaceholder: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#475569',
+    borderWidth: 3,
+    borderColor: '#64748b',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  settingsAvatarEmoji: {
+    fontSize: 40,
+  },
+  avatarHint: {
+    color: '#94a3b8',
+    fontSize: 12,
+  },
   difficultyButton: {
-    backgroundColor: '#2a2a2a',
-    padding: 12,
-    borderRadius: 8,
-    marginVertical: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 6,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.4)',
+    gap: 10,
   },
   difficultyButtonActive: {
-    backgroundColor: '#10b981',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderColor: '#10b981',
   },
-  difficultyText: {
-    color: '#999',
-    textAlign: 'center',
-    fontWeight: 'bold',
+  difficultyEmoji2: {
+    fontSize: 18,
   },
-  difficultyTextActive: {
-    color: '#fff',
+  difficultyInfo: {
+    flex: 1,
   },
-  settingsButtons: {
-    flexDirection: 'row',
-    gap: 10,
-    justifyContent: 'space-between',
+  difficultyName: {
+    color: '#cbd5e1',
+    fontSize: 13,
+    fontWeight: '600',
   },
-  multiplayerTitle: {
-    fontSize: 36,
-    fontWeight: 'bold',
-    color: '#fff',
-    textAlign: 'center',
-    marginBottom: 20,
+  difficultyNameActive: {
+    color: '#10b981',
   },
-  comingSoon: {
-    backgroundColor: '#fef3c7',
-    padding: 20,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#eab308',
-    marginBottom: 20,
+  difficultyDetails: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
   },
-  comingSoonTitle: {
+  difficultyDetailsActive: {
+    color: '#6ee7b7',
+  },
+  checkmark: {
     fontSize: 16,
-    fontWeight: 'bold',
-    color: '#854d0e',
-    marginBottom: 8,
+    color: '#10b981',
   },
-  comingSoonText: {
+  howToPlayCard: {
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  howToPlayTitle: {
     fontSize: 14,
-    color: '#92400e',
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+    marginBottom: 10,
+  },
+  howToPlayText: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    marginBottom: 4,
+    lineHeight: 16,
   },
 });
