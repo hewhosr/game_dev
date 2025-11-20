@@ -992,7 +992,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom:-145,
   },
   grid: {
     backgroundColor: 'rgba(30, 41, 59, 0.8)',
@@ -1000,6 +1000,7 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: 'rgba(71, 85, 105, 0.5)',
     position: 'relative',
+
   },
   snakeSegment: {
     position: 'absolute',
