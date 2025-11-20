@@ -1,42 +1,25 @@
 import React from 'react';
 import { View } from 'react-native';
-import { GRID_SIZE } from '../../constants/GameConstants';
-import { styles } from '../../styles/GameStyles';
+import { CELL_SIZE, COLORS } from '../../constants/GameConstants';
 
-const Snake = ({ body }) => {
-  if (!body || !Array.isArray(body)) return null;
-  
+const Snake = ({ snake }) => {
   return (
     <>
-      {body.map((segment, index) => (
+      {snake.map((segment, index) => (
         <View
-          key={index}
-          style={[
-            styles.snakeSegment,
-            {
-              left: segment.x * GRID_SIZE,
-              top: segment.y * GRID_SIZE,
-              width: GRID_SIZE - 1,
-              height: GRID_SIZE - 1,
-              backgroundColor: index === 0 ? '#00C853' : '#64DD17',
-              ...(index === 0 && {
-                backgroundColor: '#00E676',
-                shadowColor: '#00C853',
-                shadowOffset: { width: 0, height: 0 },
-                shadowOpacity: 0.8,
-                shadowRadius: 4,
-                elevation: 6,
-              })
-            }
-          ]}
-        >
-          {index === 0 && (
-            <>
-              <View style={styles.snakeEyeLeft} />
-              <View style={styles.snakeEyeRight} />
-            </>
-          )}
-        </View>
+          key={`snake-${index}`}
+          style={{
+            position: 'absolute',
+            width: CELL_SIZE,
+            height: CELL_SIZE,
+            left: segment.x * CELL_SIZE,
+            top: segment.y * CELL_SIZE,
+            backgroundColor: index === 0 ? COLORS.snakeHead : COLORS.snake,
+            borderRadius: 4,
+            borderWidth: 1,
+            borderColor: index === 0 ? COLORS.snake : COLORS.snakeHead,
+          }}
+        />
       ))}
     </>
   );

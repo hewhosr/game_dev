@@ -1,13 +1,12 @@
 {
   "expo": {
-    "name": "Snake Game",
+    "name": "snake_game",
     "slug": "snake-game",
     "version": "1.0.0",
     "orientation": "landscape",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash.png",
       "resizeMode": "contain",
       "backgroundColor": "#000000"
     },

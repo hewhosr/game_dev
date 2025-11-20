@@ -1,101 +1,141 @@
-import React, { useState } from 'react';
-import { View, Text, Animated } from 'react-native';
-import { PanGestureHandler, State } from 'react-native-gesture-handler';
-import { styles } from '../../styles/GameStyles';
+import React from 'react';
+import { View, TouchableOpacity, StyleSheet } from 'react-native';
+import { COLORS } from '../../constants/GameConstants';
+import { DIRECTIONS } from '../../constants/GameConstants';
 
-const Joystick = ({ onMove }) => {
-  const [joystickPosition, setJoystickPosition] = useState({ x: 0, y: 0 });
-  const [isActive, setIsActive] = useState(false);
-  const baseSize = 100;
-  const thumbSize = 50;
-  const maxDistance = (baseSize - thumbSize) / 2;
-
-  const onGestureEvent = (event) => {
-    const { translationX, translationY } = event.nativeEvent;
-    
-    let limitedX = translationX;
-    let limitedY = translationY;
-    const distance = Math.sqrt(translationX * translationX + translationY * translationY);
-    
-    if (distance > maxDistance) {
-      const angle = Math.atan2(translationY, translationX);
-      limitedX = Math.cos(angle) * maxDistance;
-      limitedY = Math.sin(angle) * maxDistance;
-    }
-    
-    setJoystickPosition({ x: limitedX, y: limitedY });
-    setIsActive(true);
-    
-    const dx = limitedX / maxDistance;
-    const dy = limitedY / maxDistance;
-    onMove({ dx, dy });
-  };
-
-  const onHandlerStateChange = (event) => {
-    if (event.nativeEvent.state === State.END || 
-        event.nativeEvent.state === State.CANCELLED) {
-      Animated.spring(joystickPosition, {
-        toValue: { x: 0, y: 0 },
-        useNativeDriver: true,
-        friction: 7,
-        tension: 40,
-      }).start();
-      
-      setTimeout(() => {
-        setJoystickPosition({ x: 0, y: 0 });
-        setIsActive(false);
-        onMove({ dx: 0, dy: 0 });
-      }, 150);
-    }
-  };
-
+const Joystick = ({ onDirectionChange }) => {
   return (
-    <View style={[styles.joystickContainer, { width: baseSize, height: baseSize }]}>
-      <Text style={styles.joystickLabel}>DRAG TO MOVE</Text>
-      <View style={[styles.joystickBase, { width: baseSize, height: baseSize }]}>
-        <PanGestureHandler
-          onGestureEvent={onGestureEvent}
-          onHandlerStateChange={onHandlerStateChange}
+    <View style={styles.container}>
+      <View style={styles.joystick}>
+        <TouchableOpacity
+          style={[styles.button, styles.buttonTop]}
+          onPress={() => onDirectionChange(DIRECTIONS.UP)}
         >
-          <Animated.View 
-            style={[
-              styles.joystickArea,
-              { 
-                width: baseSize, 
-                height: baseSize,
-                transform: [
-                  { translateX: joystickPosition.x },
-                  { translateY: joystickPosition.y }
-                ]
-              }
-            ]}
+          <View style={styles.arrow}>
+            <View style={[styles.arrowPart, styles.arrowUp]} />
+          </View>
+        </TouchableOpacity>
+        
+        <View style={styles.middleRow}>
+          <TouchableOpacity
+            style={[styles.button, styles.buttonLeft]}
+            onPress={() => onDirectionChange(DIRECTIONS.LEFT)}
           >
-            <View style={[styles.joystickCenter, { width: baseSize * 0.3, height: baseSize * 0.3 }]} />
-            <View 
-              style={[
-                styles.joystickThumb,
-                { 
-                  width: thumbSize, 
-                  height: thumbSize,
-                  backgroundColor: isActive ? '#4CAF50' : '#388E3C',
-                  shadowColor: isActive ? '#4CAF50' : '#000',
-                  shadowOpacity: isActive ? 0.6 : 0.3,
-                  elevation: isActive ? 8 : 4,
-                }
-              ]} 
-            />
-          </Animated.View>
-        </PanGestureHandler>
-      </View>
-      
-      <View style={styles.directionIndicators}>
-        <Text style={styles.directionArrow}>↑</Text>
-        <Text style={styles.directionArrow}>↓</Text>
-        <Text style={styles.directionArrow}>←</Text>
-        <Text style={styles.directionArrow}>→</Text>
+            <View style={styles.arrow}>
+              <View style={[styles.arrowPart, styles.arrowLeft]} />
+            </View>
+          </TouchableOpacity>
+          
+          <View style={styles.center} />
+          
+          <TouchableOpacity
+            style={[styles.button, styles.buttonRight]}
+            onPress={() => onDirectionChange(DIRECTIONS.RIGHT)}
+          >
+            <View style={styles.arrow}>
+              <View style={[styles.arrowPart, styles.arrowRight]} />
+            </View>
+          </TouchableOpacity>
+        </View>
+        
+        <TouchableOpacity
+          style={[styles.button, styles.buttonBottom]}
+          onPress={() => onDirectionChange(DIRECTIONS.DOWN)}
+        >
+          <View style={styles.arrow}>
+            <View style={[styles.arrowPart, styles.arrowDown]} />
+          </View>
+        </TouchableOpacity>
       </View>
     </View>
   );
 };
+
+const styles = StyleSheet.create({
+  container: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 20,
+  },
+  joystick: {
+    width: 200,
+    height: 200,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  button: {
+    width: 60,
+    height: 60,
+    backgroundColor: COLORS.accent,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 0.8,
+  },
+  buttonTop: {
+    marginBottom: 10,
+  },
+  buttonBottom: {
+    marginTop: 10,
+  },
+  buttonLeft: {
+    marginRight: 10,
+  },
+  buttonRight: {
+    marginLeft: 10,
+  },
+  middleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  center: {
+    width: 40,
+    height: 40,
+    backgroundColor: COLORS.grid,
+    borderRadius: 20,
+  },
+  arrow: {
+    width: 20,
+    height: 20,
+  },
+  arrowPart: {
+    width: 0,
+    height: 0,
+    backgroundColor: 'transparent',
+    borderStyle: 'solid',
+  },
+  arrowUp: {
+    borderLeftWidth: 10,
+    borderRightWidth: 10,
+    borderBottomWidth: 15,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: COLORS.text,
+  },
+  arrowDown: {
+    borderLeftWidth: 10,
+    borderRightWidth: 10,
+    borderTopWidth: 15,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: COLORS.text,
+  },
+  arrowLeft: {
+    borderTopWidth: 10,
+    borderBottomWidth: 10,
+    borderRightWidth: 15,
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderRightColor: COLORS.text,
+  },
+  arrowRight: {
+    borderTopWidth: 10,
+    borderBottomWidth: 10,
+    borderLeftWidth: 15,
+    borderTopColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderLeftColor: COLORS.text,
+  },
+});
 
 export default Joystick;

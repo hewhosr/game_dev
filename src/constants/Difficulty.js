@@ -1,5 +1,26 @@
-export const DIFFICULTY = {
-  EASY: { speed: 200, name: 'Easy', color: '#4CAF50' },
-  MEDIUM: { speed: 150, name: 'Medium', color: '#FF9800' },
-  HARD: { speed: 100, name: 'Hard', color: '#F44336' }
+export const DIFFICULTY_SETTINGS = {
+  easy: {
+    speed: 150,
+    label: 'Easy',
+    scoreMultiplier: 1,
+    color: '#00b894',
+  },
+  medium: {
+    speed: 100,
+    label: 'Medium',
+    scoreMultiplier: 1.5,
+    color: '#fdcb6e',
+  },
+  hard: {
+    speed: 60,
+    label: 'Hard',
+    scoreMultiplier: 2,
+    color: '#d63031',
+  },
+  expert: {
+    speed: 40,
+    label: 'Expert',
+    scoreMultiplier: 3,
+    color: '#6c5ce7',
+  },
 };

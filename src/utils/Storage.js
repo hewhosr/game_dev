@@ -1,31 +1,48 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SQLite from 'expo-sqlite';
 
-export const loadHighScores = async () => {
-  try {
-    const savedScores = await AsyncStorage.getItem('@snake_high_scores');
-    return savedScores ? JSON.parse(savedScores) : [];
-  } catch (error) {
-    console.log('Error loading high scores:', error);
-    return [];
-  }
+let db;
+
+export const initDatabase = async () => {
+  db = await SQLite.openDatabaseAsync('snakegame.db');
+  
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS high_scores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      score INTEGER NOT NULL,
+      difficulty TEXT NOT NULL,
+      date TEXT NOT NULL
+    );
+  `);
 };
 
-export const saveHighScore = async (highScores, newScore, difficulty) => {
-  try {
-    const newScoreEntry = { 
-      score: newScore, 
-      date: new Date().toLocaleDateString(),
-      difficulty: difficulty.name
-    };
-    
-    const updatedScores = [...highScores, newScoreEntry]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10);
-    
-    await AsyncStorage.setItem('@snake_high_scores', JSON.stringify(updatedScores));
-    return updatedScores;
-  } catch (error) {
-    console.log('Error saving high score:', error);
-    return highScores;
+export const saveHighScore = async (score, difficulty) => {
+  const date = new Date().toISOString();
+  await db.runAsync(
+    'INSERT INTO high_scores (score, difficulty, date) VALUES (?, ?, ?)',
+    [score, difficulty, date]
+  );
+};
+
+export const getHighScores = async (difficulty = null, limit = 10) => {
+  let query = 'SELECT * FROM high_scores';
+  let params = [];
+  
+  if (difficulty) {
+    query += ' WHERE difficulty = ?';
+    params.push(difficulty);
   }
+  
+  query += ' ORDER BY score DESC LIMIT ?';
+  params.push(limit);
+  
+  const result = await db.getAllAsync(query, params);
+  return result;
+};
+
+export const getTopScore = async (difficulty) => {
+  const result = await db.getFirstAsync(
+    'SELECT MAX(score) as topScore FROM high_scores WHERE difficulty = ?',
+    [difficulty]
+  );
+  return result?.topScore || 0;
 };

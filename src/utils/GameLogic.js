@@ -1,57 +1,61 @@
-import { GRID_SIZE, GAME_WIDTH, GAME_HEIGHT } from '../constants/GameConstants';
+import { GRID_WIDTH, GRID_HEIGHT, DIRECTIONS } from '../constants/GameConstants';
 
-export const generateFood = (snakeBody) => {
-  let newFood;
-  let attempts = 0;
-  const maxX = Math.floor(GAME_WIDTH / GRID_SIZE);
-  const maxY = Math.floor(GAME_HEIGHT / GRID_SIZE);
-  
-  do {
-    newFood = {
-      x: Math.floor(Math.random() * maxX),
-      y: Math.floor(Math.random() * maxY)
-    };
-    attempts++;
-  } while (
-    snakeBody.some(segment => segment.x === newFood.x && segment.y === newFood.y) &&
-    attempts < 100
-  );
-  return newFood;
-};
-
-export const checkCollision = (head, snakeBody) => {
-  if (snakeBody.length > 3) {
-    return snakeBody.slice(1).some(segment => 
-      segment.x === head.x && segment.y === head.y
-    );
+export const checkCollision = (head, snake) => {
+  // Check wall collision
+  if (head.x < 0 || head.x >= GRID_WIDTH || head.y < 0 || head.y >= GRID_HEIGHT) {
+    return true;
   }
+  
+  // Check self collision
+  for (let i = 0; i < snake.length; i++) {
+    if (head.x === snake[i].x && head.y === snake[i].y) {
+      return true;
+    }
+  }
+  
   return false;
 };
 
-export const moveSnake = (snake, direction) => {
-  const newSnake = [...snake.body];
-  let head = { ...newSnake[0] };
-  
-  switch (direction) {
-    case 'up': head.y -= 1; break;
-    case 'down': head.y += 1; break;
-    case 'left': head.x -= 1; break;
-    case 'right': head.x += 1; break;
-  }
+export const checkFoodCollision = (head, food) => {
+  return head.x === food.x && head.y === food.y;
+};
 
-  const maxX = Math.floor(GAME_WIDTH / GRID_SIZE);
-  const maxY = Math.floor(GAME_HEIGHT / GRID_SIZE);
+export const generateFood = (snake) => {
+  let food;
+  let isOnSnake;
   
-  // Wall wrapping
-  if (head.x < 0) head.x = maxX - 1;
-  else if (head.x >= maxX) head.x = 0;
-  if (head.y < 0) head.y = maxY - 1;
-  else if (head.y >= maxY) head.y = 0;
+  do {
+    food = {
+      x: Math.floor(Math.random() * GRID_WIDTH),
+      y: Math.floor(Math.random() * GRID_HEIGHT),
+    };
+    
+    isOnSnake = snake.some(segment => segment.x === food.x && segment.y === food.y);
+  } while (isOnSnake);
+  
+  return food;
+};
 
-  newSnake.unshift(head);
-  
-  return {
-    newSnake,
-    head
+export const moveSnake = (snake, direction, grow = false) => {
+  const head = snake[0];
+  const newHead = {
+    x: head.x + direction.x,
+    y: head.y + direction.y,
   };
+  
+  const newSnake = [newHead, ...snake];
+  
+  if (!grow) {
+    newSnake.pop();
+  }
+  
+  return newSnake;
+};
+
+export const getOppositeDirection = (direction) => {
+  if (direction === DIRECTIONS.UP) return DIRECTIONS.DOWN;
+  if (direction === DIRECTIONS.DOWN) return DIRECTIONS.UP;
+  if (direction === DIRECTIONS.LEFT) return DIRECTIONS.RIGHT;
+  if (direction === DIRECTIONS.RIGHT) return DIRECTIONS.LEFT;
+  return direction;
 };

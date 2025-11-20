@@ -1,26 +1,42 @@
-import React from 'react';
-import { View } from 'react-native';
-import { GRID_SIZE } from '../../constants/GameConstants';
-import { styles } from '../../styles/GameStyles';
+import React, { useEffect, useRef } from 'react';
+import { View, Animated } from 'react-native';
+import { CELL_SIZE, COLORS } from '../../constants/GameConstants';
 
-const Food = ({ position }) => {
-  if (!position) return null;
-  
+const Food = ({ food }) => {
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.3,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, []);
+
   return (
-    <View
-      style={[
-        styles.food,
-        {
-          left: position.x * GRID_SIZE,
-          top: position.y * GRID_SIZE,
-          width: GRID_SIZE - 1,
-          height: GRID_SIZE - 1,
-        }
-      ]}
-    >
-      <View style={styles.foodInner} />
-      <View style={styles.foodSparkle} />
-    </View>
+    <Animated.View
+      style={{
+        position: 'absolute',
+        width: CELL_SIZE,
+        height: CELL_SIZE,
+        left: food.x * CELL_SIZE,
+        top: food.y * CELL_SIZE,
+        backgroundColor: COLORS.food,
+        borderRadius: CELL_SIZE / 2,
+        transform: [{ scale: pulseAnim }],
+      }}
+    />
   );
 };
 
