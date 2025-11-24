@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, TextInput, ScrollView, StyleSheet, Dimensions, Alert, Image } from 'react-native';
+import { View, Text, TouchableOpacity, TextInput, ScrollView, StyleSheet, Dimensions, Alert, Image, Modal } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { database, ref, set, onValue, update, remove } from './firebase';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_SIZE = 16;
@@ -140,18 +141,30 @@ export default function SnakeGame() {
   const [playerAvatar, setPlayerAvatar] = useState(null);
   const [leaderboard, setLeaderboard] = useState([]);
   const [showGameOverModal, setShowGameOverModal] = useState(false);
+  const [showDevInfoModal, setShowDevInfoModal] = useState(false);
   const [highScore, setHighScore] = useState(0);
   const [filterDifficulty, setFilterDifficulty] = useState('ALL');
+  
+  // Multiplayer States
   const [gameMode, setGameMode] = useState('single');
-  const [multiplayerCode, setMultiplayerCode] = useState('');
-  const [opponentScore, setOpponentScore] = useState(0);
-  const [opponentName, setOpponentName] = useState('Opponent');
+  const [roomCode, setRoomCode] = useState('');
+  const [currentRoomCode, setCurrentRoomCode] = useState('');
+  const [isHost, setIsHost] = useState(false);
+  const [opponentData, setOpponentData] = useState(null);
+  const [playerId, setPlayerId] = useState(null);
+  const [roomStatus, setRoomStatus] = useState('waiting'); // waiting, ready, playing, finished
+  const [winner, setWinner] = useState(null);
 
   const gameLoopRef = useRef(null);
+  const roomRef = useRef(null);
 
   useEffect(() => {
     loadProfile();
     loadLeaderboard();
+    
+    // Generate unique player ID
+    const id = `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    setPlayerId(id);
   }, []);
 
   const loadProfile = async () => {
@@ -195,6 +208,233 @@ export default function SnakeGame() {
     }
   };
 
+  // Multiplayer Functions
+  const generateRoomCode = () => {
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    return code;
+  };
+
+  const createRoom = async () => {
+    if (!playerName.trim()) {
+      Alert.alert('Error', 'Please enter your name first!');
+      return;
+    }
+
+    const code = generateRoomCode();
+    const roomReference = ref(database, `rooms/${code}`);
+    
+    try {
+      await set(roomReference, {
+        code,
+        host: {
+          id: playerId,
+          name: playerName,
+          avatar: playerAvatar,
+          score: 0,
+          gameOver: false,
+          ready: false
+        },
+        guest: null,
+        status: 'waiting',
+        difficulty: difficulty,
+        createdAt: Date.now()
+      });
+
+      setCurrentRoomCode(code);
+      setIsHost(true);
+      setGameMode('multiplayer');
+      setScreen('lobby');
+      
+      // Listen for room changes - PASS true FOR HOST
+      listenToRoom(code, true);
+      
+      Alert.alert('Room Created!', `Share this code with your friend:\n\n${code}`);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to create room. Please try again.');
+      console.error(error);
+    }
+  };
+
+  const joinRoom = async (code) => {
+    if (!playerName.trim()) {
+      Alert.alert('Error', 'Please enter your name first!');
+      return;
+    }
+
+    if (!code || code.length !== 6) {
+      Alert.alert('Error', 'Please enter a valid 6-character room code!');
+      return;
+    }
+
+    const roomReference = ref(database, `rooms/${code.toUpperCase()}`);
+    
+    try {
+      // Check if room exists
+      onValue(roomReference, async (snapshot) => {
+        if (snapshot.exists()) {
+          const roomData = snapshot.val();
+          
+          if (roomData.guest) {
+            Alert.alert('Error', 'Room is already full!');
+            return;
+          }
+
+          // Join as guest
+          const guestRef = ref(database, `rooms/${code.toUpperCase()}/guest`);
+          await set(guestRef, {
+            id: playerId,
+            name: playerName,
+            avatar: playerAvatar,
+            score: 0,
+            gameOver: false,
+            ready: false
+          });
+
+          setCurrentRoomCode(code.toUpperCase());
+          setIsHost(false);
+          setGameMode('multiplayer');
+          setScreen('lobby');
+          
+          // Listen for room changes - PASS false FOR GUEST
+          listenToRoom(code.toUpperCase(), false);
+        } else {
+          Alert.alert('Error', 'Room not found! Please check the code.');
+        }
+      }, { onlyOnce: true });
+    } catch (error) {
+      Alert.alert('Error', 'Failed to join room. Please try again.');
+      console.error(error);
+    }
+  };
+
+  // FIXED: Added userIsHost parameter to avoid stale closure
+  const listenToRoom = (code, userIsHost) => {
+    roomRef.current = ref(database, `rooms/${code}`);
+    
+    onValue(roomRef.current, (snapshot) => {
+      if (snapshot.exists()) {
+        const roomData = snapshot.val();
+        
+        // Update opponent data - Use parameter instead of state
+        if (userIsHost && roomData.guest && roomData.guest.id !== playerId) {
+          setOpponentData(roomData.guest);
+        } else if (!userIsHost && roomData.host && roomData.host.id !== playerId) {
+          setOpponentData(roomData.host);
+        }
+
+        // Check if both players are ready
+        if (roomData.status === 'ready' && roomData.host?.ready && roomData.guest?.ready) {
+          if (roomStatus !== 'playing') {
+            setRoomStatus('playing');
+            startMultiplayerGame();
+          }
+        }
+
+        // Check for game over
+        const opponent = userIsHost ? roomData.guest : roomData.host;
+        if (opponent?.gameOver && gameOver) {
+          determineWinner(score, opponent.score);
+        }
+      } else {
+        // Room was deleted
+        if (screen === 'lobby' || screen === 'game') {
+          Alert.alert('Room Closed', 'The room has been closed.');
+          leaveRoom();
+        }
+      }
+    });
+  };
+
+  const setPlayerReady = async () => {
+    const playerPath = isHost ? 'host' : 'guest';
+    const readyRef = ref(database, `rooms/${currentRoomCode}/${playerPath}/ready`);
+    
+    try {
+      await set(readyRef, true);
+      
+      // If host, also update room status
+      if (isHost) {
+        const statusRef = ref(database, `rooms/${currentRoomCode}/status`);
+        await set(statusRef, 'ready');
+      }
+    } catch (error) {
+      console.error('Error setting ready:', error);
+    }
+  };
+
+  const updatePlayerScore = async (newScore) => {
+    const playerPath = isHost ? 'host' : 'guest';
+    const scoreRef = ref(database, `rooms/${currentRoomCode}/${playerPath}/score`);
+    
+    try {
+      await set(scoreRef, Math.floor(newScore));
+    } catch (error) {
+      console.error('Error updating score:', error);
+    }
+  };
+
+  const updatePlayerGameOver = async () => {
+    const playerPath = isHost ? 'host' : 'guest';
+    const gameOverRef = ref(database, `rooms/${currentRoomCode}/${playerPath}/gameOver`);
+    
+    try {
+      await set(gameOverRef, true);
+    } catch (error) {
+      console.error('Error updating game over:', error);
+    }
+  };
+
+  const determineWinner = (myScore, opponentScore) => {
+    if (myScore > opponentScore) {
+      setWinner('you');
+    } else if (opponentScore > myScore) {
+      setWinner('opponent');
+    } else {
+      setWinner('tie');
+    }
+    setRoomStatus('finished');
+  };
+
+  const leaveRoom = async () => {
+    if (currentRoomCode) {
+      try {
+        if (isHost) {
+          // Host deletes entire room
+          const roomReference = ref(database, `rooms/${currentRoomCode}`);
+          await remove(roomReference);
+        } else {
+          // Guest removes themselves
+          const guestRef = ref(database, `rooms/${currentRoomCode}/guest`);
+          await remove(guestRef);
+        }
+      } catch (error) {
+        console.error('Error leaving room:', error);
+      }
+    }
+    
+    // Reset states
+    setCurrentRoomCode('');
+    setIsHost(false);
+    setOpponentData(null);
+    setRoomStatus('waiting');
+    setWinner(null);
+    setGameMode('single');
+    resetGame();
+  };
+
+  const startMultiplayerGame = () => {
+    setSnake(GameLogic.createInitialSnake());
+    setFood(GameLogic.createFood(GameLogic.createInitialSnake()));
+    setDirection(DIRECTIONS.RIGHT);
+    setNextDirection(DIRECTIONS.RIGHT);
+    setScore(0);
+    setGameOver(false);
+    setShowGameOverModal(false);
+    setIsPlaying(true);
+    setScreen('game');
+  };
+
+  // Game Loop
   useEffect(() => {
     if (!isPlaying || gameOver) return;
 
@@ -211,7 +451,14 @@ export default function SnakeGame() {
 
         if (GameLogic.checkFood(newSnake, food)) {
           const points = 10 * DIFFICULTIES[difficulty].multiplier;
-          setScore(prev => prev + points);
+          const newScore = score + points;
+          setScore(newScore);
+          
+          // Update score in Firebase for multiplayer
+          if (gameMode === 'multiplayer' && currentRoomCode) {
+            updatePlayerScore(newScore);
+          }
+          
           setFood(GameLogic.createFood(newSnake));
           return GameLogic.growSnake(newSnake);
         }
@@ -221,13 +468,18 @@ export default function SnakeGame() {
     }, DIFFICULTIES[difficulty].speed);
 
     return () => clearInterval(gameLoopRef.current);
-  }, [isPlaying, gameOver, nextDirection, food, difficulty]);
+  }, [isPlaying, gameOver, nextDirection, food, difficulty, score, gameMode, currentRoomCode]);
 
   const handleGameOver = async () => {
     setGameOver(true);
     setIsPlaying(false);
     
-    if (score > 0) {
+    // Update Firebase for multiplayer
+    if (gameMode === 'multiplayer' && currentRoomCode) {
+      await updatePlayerGameOver();
+    }
+    
+    if (score > 0 && gameMode === 'single') {
       await StorageUtils.saveScore(playerName || 'Guest', score, difficulty);
       await loadLeaderboard();
     }
@@ -281,27 +533,78 @@ export default function SnakeGame() {
     );
   };
 
-  const generateMultiplayerCode = () => {
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setMultiplayerCode(code);
-    Alert.alert('Room Created!', `Share this code: ${code}\n\nAsk your friend to join!`);
-  };
-
-  const joinMultiplayerGame = () => {
-    if (multiplayerCode.trim().length === 6) {
-      setGameMode('multiplayer');
-      setOpponentName(`Player (${multiplayerCode})`);
-      startGame();
-    } else {
-      Alert.alert('Invalid Code', 'Code must be 6 characters');
-    }
-  };
-
   useEffect(() => {
     return () => {
       if (gameLoopRef.current) clearInterval(gameLoopRef.current);
+      if (currentRoomCode) leaveRoom();
     };
   }, []);
+
+  // Developer Info Modal Component
+  const DeveloperInfoModal = () => (
+    <Modal
+      visible={showDevInfoModal}
+      transparent={true}
+      animationType="fade"
+      onRequestClose={() => setShowDevInfoModal(false)}
+    >
+      <View style={styles.modalOverlay}>
+        <View style={styles.devInfoModal}>
+          <View style={styles.devInfoHeader}>
+            <Text style={styles.devInfoTitle}>ℹ️ About</Text>
+          </View>
+
+          <ScrollView style={styles.devInfoContent}>
+            <View style={styles.devInfoSection}>
+              <Text style={styles.devInfoLabel}>🎮 App Name</Text>
+              <Text style={styles.devInfoText}>Nokia Snake Game</Text>
+            </View>
+ 
+            <View style={styles.devInfoSection}>
+              <Text style={styles.devInfoLabel}>📱 Version</Text>
+              <Text style={styles.devInfoText}>2.0.0 (Firebase Multiplayer)</Text>
+            </View>
+
+            <View style={styles.devInfoSection}>
+              <Text style={styles.devInfoLabel}>👥 Submitted by:</Text>
+              <Text style={styles.devInfoText}>Aaron Jay Tiongco Dela Torre</Text>
+              <Text style={styles.devInfoText}>Dave Avenido</Text>
+              <Text style={styles.devInfoText}>Cyrich Alburo</Text>
+              <Text style={styles.devInfoText}>Angelo Vallejos</Text>
+              <Text style={styles.devInfoText}>Jan Vincent Boiser</Text>
+              <Text style={styles.devInfoText}>Angela Tedra</Text>
+              <Text style={styles.devInfoText}>Alisa Mae Roscual</Text>
+              <Text style={styles.devInfoText}>Estefanie Castro</Text>
+              <Text style={styles.devInfoText}>Jhustine Miasco Vallente</Text>
+              <Text style={styles.devInfoText}>Marielle Castulo Lagare</Text>
+            </View>
+
+            <View style={styles.devInfoSection}>
+              <Text style={styles.devInfoLabel}>👨‍🏫 Submitted to:</Text>
+              <Text style={styles.devInfoText}>Jay Ian Camelotes</Text>
+            </View>
+
+            <View style={styles.devInfoSection}>
+              <Text style={styles.devInfoLabel}>📅 Submission Date</Text>
+              <Text style={styles.devInfoText}>{new Date().toLocaleDateString()}</Text>
+            </View>
+
+            <View style={styles.devInfoSection}>
+              <Text style={styles.devInfoLabel}>🛠️ Built with</Text>
+              <Text style={styles.devInfoText}>React Native, Expo & Firebase</Text>
+            </View>
+          </ScrollView>
+
+          <TouchableOpacity
+            style={styles.devInfoCloseButton}
+            onPress={() => setShowDevInfoModal(false)}
+          >
+            <Text style={styles.devInfoCloseButtonText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
 
   const renderMenu = () => (
     <View style={styles.menuContainer}>
@@ -312,6 +615,13 @@ export default function SnakeGame() {
             <Text style={styles.highScoreText}>Best: {highScore}</Text>
           )}
         </View>
+
+        <TouchableOpacity
+          style={styles.infoButton}
+          onPress={() => setShowDevInfoModal(true)}
+        >
+          <Text style={styles.infoButtonText}>ℹ️</Text>
+        </TouchableOpacity>
 
         <View style={styles.profileCard}>
           <TouchableOpacity onPress={handleAvatarUpload} style={styles.avatarButton}>
@@ -377,6 +687,166 @@ export default function SnakeGame() {
           </TouchableOpacity>
         </View>
       </View>
+
+      <DeveloperInfoModal />
+    </View>
+  );
+
+  const renderMultiplayer = () => (
+    <View style={styles.multiplayerContainer}>
+      <View style={styles.multiplayerHeader}>
+        <Text style={styles.multiplayerTitle}>👥 Multiplayer</Text>
+        <TouchableOpacity onPress={() => setScreen('menu')}>
+          <Text style={styles.closeButton}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={styles.multiplayerContent}>
+        <View style={styles.modeCard}>
+          <Text style={styles.modeCardTitle}>🎮 Create Room</Text>
+          <Text style={styles.modeCardDesc}>Create a room and share the code with a friend</Text>
+          <TouchableOpacity
+            onPress={createRoom}
+            style={styles.modeButton}
+          >
+            <Text style={styles.modeButtonText}>Create Room</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.modeCard}>
+          <Text style={styles.modeCardTitle}>🔗 Join Room</Text>
+          <Text style={styles.modeCardDesc}>Enter a friend's room code to join</Text>
+          <TextInput
+            placeholder="Enter 6-character code..."
+            placeholderTextColor="#94a3b8"
+            value={roomCode}
+            onChangeText={(text) => setRoomCode(text.toUpperCase())}
+            maxLength={6}
+            style={styles.codeInput}
+            autoCapitalize="characters"
+          />
+          <TouchableOpacity
+            onPress={() => joinRoom(roomCode)}
+            disabled={roomCode.trim().length !== 6}
+            style={[styles.modeButton, roomCode.trim().length !== 6 && styles.disabledButton]}
+          >
+            <Text style={styles.modeButtonText}>Join Room</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>ℹ️ How Firebase Multiplayer Works</Text>
+          <Text style={styles.infoText}>• Create or join a room using a 6-character code</Text>
+          <Text style={styles.infoText}>• Both players must be ready to start</Text>
+          <Text style={styles.infoText}>• Compete in real-time with live score updates</Text>
+          <Text style={styles.infoText}>• First player to game over loses</Text>
+          <Text style={styles.infoText}>• Highest score wins!</Text>
+          <Text style={styles.infoText}>• Same difficulty for fair competition</Text>
+        </View>
+      </ScrollView>
+    </View>
+  );
+
+  const renderLobby = () => (
+    <View style={styles.lobbyContainer}>
+      <View style={styles.lobbyHeader}>
+        <Text style={styles.lobbyTitle}>🎮 Game Lobby</Text>
+        <TouchableOpacity onPress={leaveRoom}>
+          <Text style={styles.closeButton}>✕</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={styles.lobbyScrollContent} contentContainerStyle={styles.lobbyScrollContainer}>
+        <View style={styles.roomCodeCard}>
+          <Text style={styles.roomCodeLabel}>Room Code</Text>
+          <Text style={styles.roomCodeText}>{currentRoomCode}</Text>
+          <Text style={styles.roomCodeHint}>Share this code with your friend</Text>
+        </View>
+
+        <View style={styles.playersContainer}>
+          <View style={styles.playerCard}>
+            <View style={styles.playerCardHeader}>
+              <Text style={styles.playerCardTitle}>👑 Host</Text>
+              {isHost && <Text style={styles.youBadge}>YOU</Text>}
+            </View>
+            <View style={styles.playerCardContent}>
+              {playerAvatar && isHost ? (
+                <Image source={{ uri: playerAvatar }} style={styles.lobbyAvatar} />
+              ) : opponentData && !isHost && opponentData.avatar ? (
+                <Image source={{ uri: opponentData.avatar }} style={styles.lobbyAvatar} />
+              ) : (
+                <View style={styles.lobbyAvatarPlaceholder}>
+                  <Text style={styles.lobbyAvatarEmoji}>👤</Text>
+                </View>
+              )}
+              <Text style={styles.playerCardName}>
+                {isHost ? playerName : (opponentData ? opponentData.name : 'Waiting...')}
+              </Text>
+              {((isHost && opponentData?.ready) || (!isHost && opponentData?.ready)) && (
+                <Text style={styles.readyIndicator}>✓ Ready</Text>
+              )}
+            </View>
+          </View>
+
+          <Text style={styles.vsText}>VS</Text>
+
+          <View style={styles.playerCard}>
+            <View style={styles.playerCardHeader}>
+              <Text style={styles.playerCardTitle}>🎯 Guest</Text>
+              {!isHost && <Text style={styles.youBadge}>YOU</Text>}
+            </View>
+            <View style={styles.playerCardContent}>
+              {playerAvatar && !isHost ? (
+                <Image source={{ uri: playerAvatar }} style={styles.lobbyAvatar} />
+              ) : opponentData && isHost && opponentData.avatar ? (
+                <Image source={{ uri: opponentData.avatar }} style={styles.lobbyAvatar} />
+              ) : (
+                <View style={styles.lobbyAvatarPlaceholder}>
+                  <Text style={styles.lobbyAvatarEmoji}>
+                    {opponentData && isHost ? '👤' : '⏳'}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.playerCardName}>
+                {!isHost ? playerName : (opponentData ? opponentData.name : 'Waiting...')}
+              </Text>
+              {((!isHost && opponentData?.ready) || (isHost && opponentData?.ready)) && (
+                <Text style={styles.readyIndicator}>✓ Ready</Text>
+              )}
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.difficultyCard}>
+          <Text style={styles.difficultyCardTitle}>⚙️ Settings</Text>
+          <View style={styles.difficultyRow}>
+            <Text style={styles.difficultyLabel}>Difficulty:</Text>
+            <Text style={styles.difficultyValue}>
+              {DIFFICULTIES[difficulty].emoji} {difficulty}
+            </Text>
+          </View>
+        </View>
+
+        {opponentData ? (
+          roomStatus === 'playing' ? (
+            <View style={styles.startingCard}>
+              <Text style={styles.startingText}>🎮 Starting Game...</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              onPress={setPlayerReady}
+              style={styles.readyButton}
+            >
+              <Text style={styles.readyButtonText}>✓ I'm Ready to Play!</Text>
+            </TouchableOpacity>
+          )
+        ) : (
+          <View style={styles.waitingCard}>
+            <Text style={styles.waitingText}>⏳ Waiting for opponent...</Text>
+            <Text style={styles.waitingSubtext}>Share code: {currentRoomCode}</Text>
+          </View>
+        )}
+      </ScrollView>
     </View>
   );
 
@@ -409,7 +879,13 @@ export default function SnakeGame() {
             onPress={() => {
               Alert.alert('Return to menu?', 'Your score will be lost', [
                 { text: 'Cancel', style: 'cancel' },
-                { text: 'Yes', onPress: resetGame }
+                { text: 'Yes', onPress: () => {
+                  if (gameMode === 'multiplayer') {
+                    leaveRoom();
+                  } else {
+                    resetGame();
+                  }
+                }}
               ]);
             }}
             style={styles.homeButton}
@@ -419,9 +895,12 @@ export default function SnakeGame() {
         </View>
       </View>
 
-      {gameMode === 'multiplayer' && (
+      {gameMode === 'multiplayer' && opponentData && (
         <View style={styles.opponentScoreBar}>
-          <Text style={styles.opponentText}>👤 {opponentName}: {Math.floor(opponentScore)}</Text>
+          <Text style={styles.opponentText}>
+            👤 {opponentData.name}: {Math.floor(opponentData.score || 0)}
+            {opponentData.gameOver && ' ☠️'}
+          </Text>
         </View>
       )}
 
@@ -507,95 +986,77 @@ export default function SnakeGame() {
       {showGameOverModal && (
         <View style={styles.modal}>
           <View style={styles.modalContent}>
-            <Text style={styles.gameOverEmoji}>💀</Text>
-            <Text style={styles.gameOverText}>GAME OVER</Text>
-            <View style={styles.finalScoreCard}>
-              <Text style={styles.finalScore}>{Math.floor(score)}</Text>
-              <Text style={styles.finalDifficulty}>
-                {DIFFICULTIES[difficulty].emoji} {difficulty}
-              </Text>
-            </View>
-            {score > highScore && score > 0 && (
-              <Text style={styles.newHighScore}>🎉 NEW HIGH SCORE!</Text>
+            {gameMode === 'multiplayer' && winner ? (
+              <>
+                <Text style={styles.gameOverEmoji}>
+                  {winner === 'you' ? '🏆' : winner === 'tie' ? '🤝' : '💀'}
+                </Text>
+                <Text style={styles.gameOverText}>
+                  {winner === 'you' ? 'YOU WIN!' : winner === 'tie' ? 'TIE!' : 'YOU LOSE!'}
+                </Text>
+                <View style={styles.finalScoreCard}>
+                  <View style={styles.multiScoreRow}>
+                    <View style={styles.multiScoreItem}>
+                      <Text style={styles.multiScoreLabel}>You</Text>
+                      <Text style={styles.finalScore}>{Math.floor(score)}</Text>
+                    </View>
+                    <Text style={styles.vsTextSmall}>VS</Text>
+                    <View style={styles.multiScoreItem}>
+                      <Text style={styles.multiScoreLabel}>{opponentData?.name}</Text>
+                      <Text style={styles.finalScore}>{Math.floor(opponentData?.score || 0)}</Text>
+                    </View>
+                  </View>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.gameOverEmoji}>💀</Text>
+                <Text style={styles.gameOverText}>GAME OVER</Text>
+                <View style={styles.finalScoreCard}>
+                  <Text style={styles.finalScore}>{Math.floor(score)}</Text>
+                  <Text style={styles.finalDifficulty}>
+                    {DIFFICULTIES[difficulty].emoji} {difficulty}
+                  </Text>
+                </View>
+                {score > highScore && score > 0 && (
+                  <Text style={styles.newHighScore}>🎉 NEW HIGH SCORE!</Text>
+                )}
+              </>
             )}
             <View style={styles.modalButtons}>
-              <TouchableOpacity
-                onPress={() => {
-                  setShowGameOverModal(false);
-                  startGame();
-                }}
-                style={[styles.modalButton, styles.playAgainButton]}
-              >
-                <Text style={styles.modalButtonText}>🔄 Again</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={resetGame}
-                style={[styles.modalButton, styles.menuButton2]}
-              >
-                <Text style={styles.modalButtonText}>🏠 Menu</Text>
-              </TouchableOpacity>
+              {gameMode === 'multiplayer' ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowGameOverModal(false);
+                    leaveRoom();
+                  }}
+                  style={[styles.modalButton, styles.menuButton2]}
+                >
+                  <Text style={styles.modalButtonText}>🏠 Menu</Text>
+                </TouchableOpacity>
+              ) : (
+                <>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setShowGameOverModal(false);
+                      startGame();
+                    }}
+                    style={[styles.modalButton, styles.playAgainButton]}
+                  >
+                    <Text style={styles.modalButtonText}>🔄 Again</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={resetGame}
+                    style={[styles.modalButton, styles.menuButton2]}
+                  >
+                    <Text style={styles.modalButtonText}>🏠 Menu</Text>
+                  </TouchableOpacity>
+                </>
+              )}
             </View>
           </View>
         </View>
       )}
-    </View>
-  );
-
-  const renderMultiplayer = () => (
-    <View style={styles.multiplayerContainer}>
-      <View style={styles.multiplayerHeader}>
-        <Text style={styles.multiplayerTitle}>👥 Multiplayer</Text>
-        <TouchableOpacity onPress={() => setScreen('menu')}>
-          <Text style={styles.closeButton}>✕</Text>
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView style={styles.multiplayerContent}>
-        <View style={styles.modeCard}>
-          <Text style={styles.modeCardTitle}>🎮 Create Room</Text>
-          <Text style={styles.modeCardDesc}>Create a room and share the code with friends</Text>
-          <TouchableOpacity
-            onPress={generateMultiplayerCode}
-            style={styles.modeButton}
-          >
-            <Text style={styles.modeButtonText}>Generate Code</Text>
-          </TouchableOpacity>
-          {multiplayerCode && (
-            <View style={styles.codeDisplay}>
-              <Text style={styles.codeText}>Code: {multiplayerCode}</Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.modeCard}>
-          <Text style={styles.modeCardTitle}>🔗 Join Room</Text>
-          <Text style={styles.modeCardDesc}>Enter a friend's room code to join</Text>
-          <TextInput
-            placeholder="Enter 6-digit code..."
-            placeholderTextColor="#94a3b8"
-            value={multiplayerCode}
-            onChangeText={setMultiplayerCode}
-            maxLength={6}
-            style={styles.codeInput}
-          />
-          <TouchableOpacity
-            onPress={joinMultiplayerGame}
-            disabled={multiplayerCode.trim().length !== 6}
-            style={[styles.modeButton, multiplayerCode.trim().length !== 6 && styles.disabledButton]}
-          >
-            <Text style={styles.modeButtonText}>Join Game</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.infoCard}>
-          <Text style={styles.infoTitle}>ℹ️ How Multiplayer Works</Text>
-          <Text style={styles.infoText}>• Create or join a room using a 6-digit code</Text>
-          <Text style={styles.infoText}>• Both players compete in real-time</Text>
-          <Text style={styles.infoText}>• Highest score wins!</Text>
-          <Text style={styles.infoText}>• Scores are displayed live on screen</Text>
-          <Text style={styles.infoText}>• Same difficulty for fair competition</Text>
-        </View>
-      </ScrollView>
     </View>
   );
 
@@ -745,6 +1206,7 @@ export default function SnakeGame() {
           <Text style={styles.howToPlayText}>• Don't run into yourself!</Text>
           <Text style={styles.howToPlayText}>• Your avatar appears on the snake's head</Text>
           <Text style={styles.howToPlayText}>• Higher difficulty = more points per food</Text>
+          <Text style={styles.howToPlayText}>• Challenge friends in multiplayer mode!</Text>
         </View>
       </ScrollView>
     </View>
@@ -759,6 +1221,8 @@ export default function SnakeGame() {
       return renderLeaderboard();
     case 'multiplayer':
       return renderMultiplayer();
+    case 'lobby':
+      return renderLobby();
     case 'settings':
       return renderSettings();
     default:
@@ -793,6 +1257,90 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#f59e0b',
   },
+  infoButton: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    borderWidth: 2,
+    borderColor: '#3b82f6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  infoButtonText: {
+    fontSize: 20,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  devInfoModal: {
+    backgroundColor: '#1e293b',
+    borderRadius: 20,
+    width: '46%',
+    maxWidth: 400,
+    maxHeight: '114%',
+    borderWidth: 3,
+    borderColor: '#3b82f6',
+  },
+  devInfoHeader: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+    borderBottomWidth: 2,
+    borderBottomColor: 'rgba(59, 130, 246, 0.3)',
+  },
+  devInfoTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#3b82f6',
+  },
+  devInfoContent: {
+    padding: 20,
+  },
+  devInfoSection: {
+    marginBottom: 20,
+    backgroundColor: 'rgba(30, 41, 59, 0.5)',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  devInfoLabel: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#60a5fa',
+    marginBottom: 8,
+  },
+  devInfoText: {
+    fontSize: 14,
+    color: '#e2e8f0',
+    marginBottom: 4,
+    lineHeight: 20,
+  },
+  devInfoCloseButton: {
+    backgroundColor: '#3b82f6',
+    margin: 20,
+    marginTop: 0,
+    borderRadius: 12,
+    padding: 14,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#2563eb',
+  },
+  devInfoCloseButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -825,7 +1373,7 @@ const styles = StyleSheet.create({
   avatarEmoji: {
     fontSize: 20,
   },
-   cameraIcon: {
+  cameraIcon: {
     position: 'absolute',
     bottom: -2,
     right: -2,
@@ -892,6 +1440,203 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     color: '#fff',
+  },
+  lobbyContainer: {
+    flex: 1,
+    backgroundColor: '#0f172a',
+    padding: 12,
+  },
+  lobbyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  lobbyTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#8b5cf6',
+  },
+  lobbyScrollContent: {
+    flex: 1,
+  },
+  lobbyScrollContainer: {
+    paddingBottom: 20,
+  },
+  lobbyContent: {
+    flex: 1,
+  },
+  roomCodeCard: {
+    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: '#8b5cf6',
+    alignItems: 'center',
+  },
+  roomCodeLabel: {
+    fontSize: 12,
+    color: '#e9d5ff',
+    marginBottom: 4,
+  },
+  roomCodeText: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#f3e8ff',
+    letterSpacing: 4,
+    marginBottom: 2,
+  },
+  roomCodeHint: {
+    fontSize: 11,
+    color: '#c4b5fd',
+  },
+  playersContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 8,
+  },
+  playerCard: {
+    flex: 1,
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  playerCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  playerCardTitle: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+  },
+  youBadge: {
+    backgroundColor: '#10b981',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    fontSize: 9,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  playerCardContent: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  lobbyAvatar: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    borderWidth: 2,
+    borderColor: '#10b981',
+  },
+  lobbyAvatarPlaceholder: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#475569',
+    borderWidth: 2,
+    borderColor: '#64748b',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  lobbyAvatarEmoji: {
+    fontSize: 26,
+  },
+  playerCardName: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+  },
+  vsText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#8b5cf6',
+  },
+  difficultyCard: {
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: 'rgba(71, 85, 105, 0.3)',
+  },
+  difficultyCardTitle: {
+    fontSize: 13,
+    fontWeight: 'bold',
+    color: '#f1f5f9',
+    marginBottom: 6,
+  },
+  difficultyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  difficultyLabel: {
+    fontSize: 14,
+    color: '#cbd5e1',
+  },
+  difficultyValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#10b981',
+  },
+  readyButton: {
+    backgroundColor: '#10b981',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#059669',
+  },
+  readyButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  waitingCard: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#f59e0b',
+  },
+  waitingText: {
+    color: '#fef3c7',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  readyIndicator: {
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#10b981',
+    marginTop: 4,
+  },
+  startingCard: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#10b981',
+  },
+  startingText: {
+    color: '#6ee7b7',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  waitingSubtext: {
+    color: '#fbbf24',
+    fontSize: 12,
+    marginTop: 4,
   },
   gameContainer: {
     flex: 1,
@@ -992,7 +1737,8 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom:-145,
+    marginBottom: -145,
+    marginLeft: 32,
   },
   grid: {
     backgroundColor: 'rgba(30, 41, 59, 0.8)',
@@ -1000,7 +1746,6 @@ const styles = StyleSheet.create({
     borderWidth: 4,
     borderColor: 'rgba(71, 85, 105, 0.5)',
     position: 'relative',
-
   },
   snakeSegment: {
     position: 'absolute',
@@ -1093,6 +1838,25 @@ const styles = StyleSheet.create({
     color: '#cbd5e1',
     marginTop: 4,
   },
+  multiScoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    width: '100%',
+  },
+  multiScoreItem: {
+    alignItems: 'center',
+  },
+  multiScoreLabel: {
+    fontSize: 12,
+    color: '#cbd5e1',
+    marginBottom: 4,
+  },
+  vsTextSmall: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#8b5cf6',
+  },
   newHighScore: {
     fontSize: 18,
     fontWeight: 'bold',
@@ -1180,21 +1944,6 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: 'bold',
-  },
-  codeDisplay: {
-    backgroundColor: 'rgba(139, 92, 246, 0.2)',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 12,
-    borderWidth: 2,
-    borderColor: '#8b5cf6',
-  },
-  codeText: {
-    color: '#e9d5ff',
-    fontSize: 18,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    letterSpacing: 2,
   },
   codeInput: {
     backgroundColor: 'rgba(15, 23, 42, 0.7)',
