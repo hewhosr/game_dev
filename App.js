@@ -316,10 +316,16 @@ export default function SnakeGame() {
         const roomData = snapshot.val();
         
         // Update opponent data - Use parameter instead of state
-        if (userIsHost && roomData.guest && roomData.guest.id !== playerId) {
-          setOpponentData(roomData.guest);
-        } else if (!userIsHost && roomData.host && roomData.host.id !== playerId) {
-          setOpponentData(roomData.host);
+        if (userIsHost) {
+          // Host sees guest
+          if (roomData.guest) {
+            setOpponentData(roomData.guest);
+          }
+        } else {
+          // Guest sees host
+          if (roomData.host) {
+            setOpponentData(roomData.host);
+          }
         }
 
         // Check if both players are ready
@@ -330,10 +336,21 @@ export default function SnakeGame() {
           }
         }
 
-        // Check for game over
+        // Check for game over - END GAME if either player dies
         const opponent = userIsHost ? roomData.guest : roomData.host;
+        
+        // If opponent died and I'm still playing, I win!
+        if (opponent?.gameOver && !gameOver && isPlaying) {
+          setGameOver(true);
+          setIsPlaying(false);
+          determineWinner(score, opponent.score);
+          setShowGameOverModal(true);
+        }
+        
+        // If both died, determine winner
         if (opponent?.gameOver && gameOver) {
           determineWinner(score, opponent.score);
+          setShowGameOverModal(true);
         }
       } else {
         // Room was deleted
@@ -385,14 +402,17 @@ export default function SnakeGame() {
   };
 
   const determineWinner = (myScore, opponentScore) => {
+    let result;
     if (myScore > opponentScore) {
-      setWinner('you');
+      result = 'you';
     } else if (opponentScore > myScore) {
-      setWinner('opponent');
+      result = 'opponent';
     } else {
-      setWinner('tie');
+      result = 'tie';
     }
+    setWinner(result);
     setRoomStatus('finished');
+    console.log('Winner determined:', result, 'My score:', myScore, 'Opponent:', opponentScore);
   };
 
   const leaveRoom = async () => {
@@ -567,11 +587,11 @@ export default function SnakeGame() {
 
             <View style={styles.devInfoSection}>
               <Text style={styles.devInfoLabel}>👥 Submitted by:</Text>
+
               <Text style={styles.devInfoText}>Aaron Jay Tiongco Dela Torre</Text>
               <Text style={styles.devInfoText}>Dave Avenido</Text>
               <Text style={styles.devInfoText}>Cyrich Alburo</Text>
               <Text style={styles.devInfoText}>Angelo Vallejos</Text>
-              <Text style={styles.devInfoText}>Jan Vincent Boiser</Text>
               <Text style={styles.devInfoText}>Angela Tedra</Text>
               <Text style={styles.devInfoText}>Alisa Mae Roscual</Text>
               <Text style={styles.devInfoText}>Estefanie Castro</Text>
@@ -898,8 +918,8 @@ export default function SnakeGame() {
       {gameMode === 'multiplayer' && opponentData && (
         <View style={styles.opponentScoreBar}>
           <Text style={styles.opponentText}>
-            👤 {opponentData.name}: {Math.floor(opponentData.score || 0)}
-            {opponentData.gameOver && ' ☠️'}
+            👤 {opponentData.name}: {Math.floor(opponentData.score || 0)} points
+            {opponentData.gameOver && ' 💀 GAME OVER'}
           </Text>
         </View>
       )}
